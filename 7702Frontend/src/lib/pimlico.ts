@@ -1,20 +1,17 @@
-// Uses permissionless to7702SimpleSmartAccount (EntryPoint v0.8).
-//
-// Why v0.8:
-//   - Signs UserOps via signTypedData (EIP-712) — MetaMask supports eth_signTypedData_v4
-//   - EntryPoint v0.8 includes EIP-7702 delegation inside the UserOp itself,
-//     so the bundler sends the type-4 tx — MetaMask never needs to handle it directly
-//
-// Paymaster: Pimlico's own verifying paymaster (pm_getPaymasterData).
-
-import { createPublicClient, createWalletClient, custom, http, toHex } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  custom,
+  http,
+  toHex,
+} from "viem";
 import { entryPoint08Address } from "viem/account-abstraction";
 import { sepolia } from "viem/chains";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import { createSmartAccountClient } from "permissionless";
 import { to7702SimpleSmartAccount } from "permissionless/accounts";
 
-import { PIMLICO_URL, SEPOLIA_RPC_URL } from "./constants";
+import { PAYMASTER_ADDRESS, PIMLICO_URL, SEPOLIA_RPC_URL } from "./constants";
 
 // permissionless's EIP-7702 compatible SimpleAccount for v0.8
 export const PERMISSIONLESS_IMPL =
@@ -37,14 +34,16 @@ export async function checkDelegation(address: `0x${string}`) {
   return null;
 }
 
-// Builds a smart account client using permissionless to7702SimpleSmartAccount.
-//   - WalletClient with ownerAddress matches the expected WalletClient<Transport,Chain,Account> type
-//   - Signing: signTypedData (EIP-712) via MetaMask — no eth_sign needed
-//   - Delegation to PERMISSIONLESS_IMPL handled automatically on the first UserOp
-export async function buildSmartAccountClient(ownerAddress: `0x${string}`) {
+export async function buildSmartAccountClient(
+  ownerAddress: `0x${string}`,
+  paymasterOverride?: `0x${string}`,
+) {
   if (!window.ethereum) throw new Error("MetaMask not found");
 
-  // account must be set explicitly so the type resolves to WalletClient<Transport,Chain,Account>
+  const PAYMASTER = paymasterOverride ?? PAYMASTER_ADDRESS;
+  if (!PAYMASTER || PAYMASTER === "0x")
+    throw new Error("No paymaster address configured");
+
   const walletClient = createWalletClient({
     account: ownerAddress,
     chain: sepolia,
@@ -61,7 +60,6 @@ export async function buildSmartAccountClient(ownerAddress: `0x${string}`) {
   const account = await to7702SimpleSmartAccount({
     client: publicClient,
     owner: walletClient,
-    // entryPoint defaults to v0.8 — no need to pass it
   });
 
   const smartAccountClient = createSmartAccountClient({
@@ -69,8 +67,26 @@ export async function buildSmartAccountClient(ownerAddress: `0x${string}`) {
     chain: sepolia,
     bundlerTransport: http(PIMLICO_URL),
     client: publicClient,
-    // pimlicoClient as paymaster → calls pm_getPaymasterData (Pimlico verifying paymaster)
-    paymaster: pimlicoClient,
+    // Custom PlatformPaymaster — validates on-chain, no off-chain signature needed
+    paymaster: {
+      async getPaymasterStubData() {
+        return {
+          paymaster: PAYMASTER as `0x${string}`,
+          paymasterData: "0x" as `0x${string}`,
+          paymasterVerificationGasLimit: 300_000n,
+          paymasterPostOpGasLimit: 150_000n,
+          isFinal: false,
+        };
+      },
+      async getPaymasterData() {
+        return {
+          paymaster: PAYMASTER as `0x${string}`,
+          paymasterData: "0x" as `0x${string}`,
+          paymasterVerificationGasLimit: 300_000n,
+          paymasterPostOpGasLimit: 150_000n,
+        };
+      },
+    },
     userOperation: {
       estimateFeesPerGas: async () => {
         const { fast } = await pimlicoClient.getUserOperationGasPrice();

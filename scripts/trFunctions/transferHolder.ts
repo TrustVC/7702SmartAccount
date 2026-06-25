@@ -1,7 +1,7 @@
 // transferHolder(address newHolder, bytes calldata _remark)
 // Sends a UserOp through Pimlico to call transferHolder() on the TR contract.
 //
-// Run: npx hardhat run scripts/pimlicoTR/transferHolder.ts --network sepolia
+// Run: npx hardhat run scripts/trFunctions/transferHolder.ts --network sepolia
 //
 // Required .env:
 //   PIMLICO_API_KEY, OWNER_PRIVATE_KEY, SEPOLIA_RPC_URL

@@ -1,7 +1,7 @@
-// rejectTransferBeneficiary(bytes calldata _remark)
-// Sends a UserOp through Pimlico to call rejectTransferBeneficiary() on the TR contract.
+// returnToIssuer(bytes calldata _remark)
+// Sends a UserOp through Pimlico to call returnToIssuer() on the TR contract.
 //
-// Run: npx hardhat run scripts/pimlicoTR/rejectTransferBeneficiary.ts --network sepolia
+// Run: npx hardhat run scripts/trFunctions/returnToIssuer.ts --network sepolia
 //
 // Required .env:
 //   PIMLICO_API_KEY, OWNER_PRIVATE_KEY, SEPOLIA_RPC_URL
@@ -15,7 +15,7 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 const abi = parseAbi([
-  "function rejectTransferBeneficiary(bytes calldata _remark) external",
+  "function returnToIssuer(bytes calldata _remark) external",
 ]);
 
 async function main() {
@@ -27,22 +27,20 @@ async function main() {
   console.log("");
 
   const { smartAccountClient, ownerAddress } = await buildClient();
-  console.log("\nSending rejectTransferBeneficiary() UserOp...");
+  console.log("\nSending returnToIssuer() UserOp...");
 
   const txHash = await smartAccountClient.sendTransaction({
     to: contract,
     value: 0n,
     data: encodeFunctionData({
       abi,
-      functionName: "rejectTransferBeneficiary",
+      functionName: "returnToIssuer",
       args: [remark],
     }),
   });
 
   console.log("txHash:", txHash);
-  console.log(
-    `\nrejectTransferBeneficiary() complete — owner: ${ownerAddress} ✓`,
-  );
+  console.log(`\nreturnToIssuer() complete — owner: ${ownerAddress} ✓`);
 }
 
 main().catch((err) => {

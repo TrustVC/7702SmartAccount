@@ -7,7 +7,9 @@ interface Props {
 }
 
 export function DelegationPanel({ address, onDelegated }: Props) {
-  const [currentDelegate, setCurrentDelegate] = useState<string | null>(null);
+  const [currentDelegate, setCurrentDelegate] = useState<
+    string | null | undefined
+  >(undefined);
   const [checking, setChecking] = useState(false);
 
   const isDelegated =
@@ -19,7 +21,9 @@ export function DelegationPanel({ address, onDelegated }: Props) {
     try {
       const delegate = await checkDelegation(address as `0x${string}`);
       setCurrentDelegate(delegate);
-      onDelegated(delegate?.toLowerCase() === PERMISSIONLESS_IMPL.toLowerCase());
+      onDelegated(
+        delegate?.toLowerCase() === PERMISSIONLESS_IMPL.toLowerCase(),
+      );
     } finally {
       setChecking(false);
     }
@@ -43,43 +47,61 @@ export function DelegationPanel({ address, onDelegated }: Props) {
       <div className="flex items-center justify-between mb-3">
         <p className="panel-title mb-0">EIP-7702 Delegation</p>
         {checking ? (
-          <span className="text-xs text-gray-500 animate-pulse">checking...</span>
-        ) : isDelegated ? (
+          <span className="text-xs text-gray-500 animate-pulse">
+            checking...
+          </span>
+        ) : currentDelegate === undefined ? null : isDelegated ? (
           <span className="badge-green">
             <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
-            Delegated
+            Active
           </span>
         ) : (
           <span className="badge-yellow">
             <span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" />
-            Not Delegated
+            Pending
           </span>
         )}
       </div>
 
-      <div className="space-y-1.5 text-xs text-gray-400 mb-3">
+      <div className="space-y-1.5 text-xs text-gray-400 mb-4">
         <div className="flex gap-2">
-          <span className="text-gray-600 w-32 shrink-0">Expected (permissionless):</span>
-          <span className="text-indigo-300 break-all">{PERMISSIONLESS_IMPL}</span>
+          <span className="text-gray-600 w-32 shrink-0">Target impl:</span>
+          <span className="text-indigo-300 break-all font-mono">
+            {PERMISSIONLESS_IMPL}
+          </span>
         </div>
         <div className="flex gap-2">
           <span className="text-gray-600 w-32 shrink-0">Current delegate:</span>
-          <span className={isDelegated ? "text-emerald-300 break-all" : "text-gray-500"}>
-            {currentDelegate ?? "none"}
+          <span
+            className={`break-all font-mono ${isDelegated ? "text-emerald-300" : "text-gray-500"}`}
+          >
+            {currentDelegate === undefined ? "—" : (currentDelegate ?? "none")}
           </span>
         </div>
       </div>
 
-      {!isDelegated && (
-        <p className="text-xs text-yellow-400">
-          Delegation will happen automatically when you send the first UserOp.
-          permissionless includes the EIP-7702 authorization in the first transaction.
+      {isDelegated ? (
+        <p className="text-xs text-emerald-400">
+          Your EOA is delegated to the implementation contract above. All
+          transactions are sent as smart account UserOps.
         </p>
+      ) : (
+        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-3 text-xs text-gray-300">
+          <p className="font-medium text-yellow-300 mb-1">Not delegated</p>
+          <p className="text-gray-400 mb-2">
+            Your EOA has not been delegated yet. To delegate, run the following
+            command in the CLI:
+          </p>
+          <pre className="bg-black/40 rounded px-2 py-1.5 font-mono text-yellow-200 select-all">
+            npx ts-node scripts/trFunctions/delegate.ts
+          </pre>
+        </div>
       )}
 
       <button
-        className="text-xs text-indigo-400 hover:text-indigo-300 mt-2"
+        className="text-xs text-indigo-400 hover:text-indigo-300 mt-3"
         onClick={refresh}
+        disabled={checking}
       >
         Refresh
       </button>

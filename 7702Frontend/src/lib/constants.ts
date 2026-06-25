@@ -1,10 +1,7 @@
-export const ENTRY_POINT_ADDRESS =
-  "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as const;
-
-export const IMPL_ADDRESS = (import.meta.env.VITE_EIP7702_IMPL_ADDRESS ??
+export const PAYMASTER_ADDRESS = (import.meta.env.VITE_PAYMASTER_ADDRESS ??
   "") as `0x${string}`;
 
-export const PAYMASTER_ADDRESS = (import.meta.env.VITE_PAYMASTER_ADDRESS ??
+export const TDOC_IMPLEMENTATION = (import.meta.env.VITE_TDOC_IMPLEMENTATION ??
   "") as `0x${string}`;
 
 export const REGISTRY_ADDRESS = (import.meta.env.VITE_REGISTRY_ADDRESS ??
@@ -13,7 +10,7 @@ export const REGISTRY_ADDRESS = (import.meta.env.VITE_REGISTRY_ADDRESS ??
 export const TITLE_ESCROW_ADDRESS = (import.meta.env
   .VITE_TITLE_ESCROW_ADDRESS ?? "") as `0x${string}`;
 
-export const STORAGE_ADDRESS = (import.meta.env.VITE_STORAGE_ADDRESS ??
+export const FACTORY_ADDRESS = (import.meta.env.VITE_FACTORY_ADDRESS ??
   "") as `0x${string}`;
 
 export const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY ?? "";

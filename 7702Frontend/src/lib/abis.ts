@@ -194,4 +194,31 @@ export const TITLE_ESCROW_ABI = [
     outputs: [{ name: "", type: "bool" }],
     stateMutability: "view",
   },
+  {
+    type: "function",
+    name: "prevBeneficiary",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "prevHolder",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+] as const;
+
+export const REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "hasRole",
+    inputs: [
+      { name: "role", type: "bytes32" },
+      { name: "account", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
 ] as const;

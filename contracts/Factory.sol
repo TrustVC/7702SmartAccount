@@ -2,14 +2,12 @@
 pragma solidity ^0.8.28;
 
 import {PlatformPaymaster} from "./PlatformPaymaster.sol";
-import {EIP7702Implementation} from "./EIP7702Implementation.sol";
 import {
     IEntryPoint
 } from "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
 
 contract PlatformAccountFactory {
     IEntryPoint public immutable entryPoint;
-    EIP7702Implementation public immutable implementation7702;
 
     event PlatformOnboarded(
         address indexed platformAddress,
@@ -18,7 +16,6 @@ contract PlatformAccountFactory {
 
     constructor(IEntryPoint _entryPoint) {
         entryPoint = _entryPoint;
-        implementation7702 = new EIP7702Implementation(address(_entryPoint));
     }
 
     // ── Deploy paymaster for a platform ───────────────────────────────

@@ -212,10 +212,10 @@ const ok = await publicClient.readContract({
 
 ## 5. Function Reference
 
-All scripts live in `scripts/pimlicoTR/`. Run any of them with:
+All scripts live in `scripts/trFunctions/`. Run any of them with:
 
 ```bash
-npx hardhat run scripts/pimlicoTR/<script>.ts --network sepolia
+npx hardhat run scripts/trFunctions/<script>.ts --network sepolia
 ```
 
 ---
@@ -235,7 +235,7 @@ function nominate(address _nominee, bytes calldata _remark) external
 ```bash
 NOMINEE_ADDR=0xRecipientAddress \
 REMARK="Nominating new beneficiary" \
-  npx hardhat run scripts/pimlicoTR/nominate.ts --network sepolia
+  npx hardhat run scripts/trFunctions/nominate.ts --network sepolia
 ```
 
 **Environment variables**
@@ -275,7 +275,7 @@ function transferHolder(address newHolder, bytes calldata _remark) external
 ```bash
 NEW_HOLDER_ADDR=0xNewHolderAddress \
 REMARK="Transferring to new holder" \
-  npx hardhat run scripts/pimlicoTR/transferHolder.ts --network sepolia
+  npx hardhat run scripts/trFunctions/transferHolder.ts --network sepolia
 ```
 
 **Environment variables**

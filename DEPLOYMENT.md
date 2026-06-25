@@ -57,6 +57,7 @@ npx hardhat ignition deploy ignition/modules/Factory.ts --network sepolia
 - If contract changed since last deploy: add `--reset` to force redeploy.
 
 **Save to .env:**
+
 ```env
 FACTORY_ADDRESS=0x<printed address>
 ```
@@ -70,6 +71,7 @@ npx hardhat run scripts/deployPlatformPaymaster.ts --network sepolia
 ```
 
 **Optional env overrides:**
+
 ```env
 PLATFORM_ADDRESS=0x...    # paymaster owner EOA (defaults to PRIVATE_KEY wallet)
 DAILY_LIMIT_ETH=0         # per-user daily gas cap in ETH (0 = unlimited)
@@ -77,6 +79,7 @@ DEPLOY_SALT=0x...         # hex bytes32 for CREATE2 (auto-random if unset)
 ```
 
 **Save to .env:**
+
 ```env
 PAYMASTER_ADDRESS=0x<printed address>
 ```
@@ -90,6 +93,7 @@ npx hardhat run scripts/stakePlatformPaymaster.ts --network sepolia
 ```
 
 **Optional env overrides:**
+
 ```env
 STAKE_AMOUNT_ETH=0.01      # locked bond (default: 0.01)
 DEPOSIT_AMOUNT_ETH=0.05    # gas pool for sponsoring UserOps (default: 0.05)
@@ -109,6 +113,7 @@ cast send $PAYMASTER_ADDRESS \
 ```
 
 **Verify:**
+
 ```bash
 cast call $PAYMASTER_ADDRESS "tdocDeployer()(address)" --rpc-url $SEPOLIA_RPC_URL
 # must return TDOC_DEPLOYER_ADDRESS, not 0x000...
@@ -153,6 +158,7 @@ cast send $PAYMASTER_ADDRESS \
 - `mintDocument` does **not** consume credits — just checks whitelist > 0
 
 **Verify:**
+
 ```bash
 cast call $PAYMASTER_ADDRESS \
   "userWhitelist(address)(uint256)" $USER_EOA \
@@ -170,6 +176,7 @@ npx hardhat run scripts/deployRegistryGasless.ts --network sepolia
 ```
 
 **What happens on-chain:**
+
 1. UserOp: `EOA.execute(paymaster, 0, deployRegistry(tdocImpl, name, symbol))`
 2. Paymaster deploys clone via TDocDeployer
 3. Paymaster grants `DEFAULT_ADMIN_ROLE` → calling EOA
@@ -177,6 +184,7 @@ npx hardhat run scripts/deployRegistryGasless.ts --network sepolia
 5. Registry added to `authorizedRegistries` on paymaster
 
 **Find the deployed registry address** from the `RegistryDeployed` event on the printed tx hash:
+
 ```bash
 cast logs --from-block <txBlock> --to-block <txBlock> \
   --address $PAYMASTER_ADDRESS \
@@ -185,6 +193,7 @@ cast logs --from-block <txBlock> --to-block <txBlock> \
 ```
 
 **Save:**
+
 ```env
 REGISTRY_ADDRESS=0x<deployed registry>
 ```
@@ -230,10 +239,10 @@ Once a TitleEscrow is in `authorizedTitleEscrows`, any UserOp targeting it is sp
 TITLE_ESCROW_ADDRESS=0x...    \
 NEW_HOLDER_ADDR=0x...         \
 REMARK="optional note"        \
-npx hardhat run scripts/pimlicoTR/transferHolder.ts --network sepolia
+npx hardhat run scripts/trFunctions/transferHolder.ts --network sepolia
 ```
 
-**Required .env for all `pimlicoTR/` scripts:**
+**Required .env for all `trFunctions/` scripts:**
 
 ```env
 PIMLICO_API_KEY=...
@@ -272,8 +281,8 @@ cast call $REGISTRY_ADDRESS "hasRole(bytes32,address)(bool)" 0x00000000000000000
 
 ## Contract Addresses (Sepolia)
 
-| Contract | Address |
-|---|---|
+| Contract                  | Address                                      |
+| ------------------------- | -------------------------------------------- |
 | EntryPoint v0.7 (Pimlico) | `0x0000000071727De22E5E9d8BAf0edAc6f37da032` |
-| PlatformAccountFactory | *(set FACTORY_ADDRESS after Step 1)* |
-| PlatformPaymaster | *(set PAYMASTER_ADDRESS after Step 2)* |
+| PlatformAccountFactory    | _(set FACTORY_ADDRESS after Step 1)_         |
+| PlatformPaymaster         | _(set PAYMASTER_ADDRESS after Step 2)_       |

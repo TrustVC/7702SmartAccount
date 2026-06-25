@@ -29,9 +29,9 @@ import { privateKeyToAccount } from "viem/accounts";
 import * as dotenv from "dotenv";
 dotenv.config();
 
-// Canonical EntryPoint v0.7 — used by Pimlico
+// Canonical EntryPoint v0.8 — native EIP-7702 support
 const ENTRY_POINT =
-  "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as `0x${string}`;
+  "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108" as `0x${string}`;
 
 const paymasterAbi = parseAbi([
   "function addStake(uint32 unstakeDelaySec) external payable",
@@ -63,17 +63,13 @@ async function main() {
   });
 
   // ── Current status ───────────────────────────────────────────────────────────
-  const info = (await publicClient.readContract({
+  const infoRaw = await publicClient.readContract({
     address: ENTRY_POINT,
     abi: entryPointAbi,
     functionName: "getDepositInfo",
     args: [paymasterAddress],
-  })) as {
-    deposit: bigint;
-    staked: boolean;
-    stake: bigint;
-    unstakeDelaySec: number;
-  };
+  });
+  const info = { deposit: infoRaw[0], staked: infoRaw[1], stake: infoRaw[2], unstakeDelaySec: infoRaw[3] };
   console.log("\n─────────────────────────────────────────────");
   console.log("PlatformPaymaster status:", info);
   console.log("Paymaster        :", paymasterAddress);
@@ -115,17 +111,13 @@ async function main() {
   console.log("  Confirmed ✓");
 
   // ── Final status ─────────────────────────────────────────────────────────────
-  const after = (await publicClient.readContract({
+  const afterRaw = await publicClient.readContract({
     address: ENTRY_POINT,
     abi: entryPointAbi,
     functionName: "getDepositInfo",
     args: [paymasterAddress],
-  })) as {
-    deposit: bigint;
-    staked: boolean;
-    stake: bigint;
-    unstakeDelaySec: number;
-  };
+  });
+  const after = { deposit: afterRaw[0], staked: afterRaw[1], stake: afterRaw[2], unstakeDelaySec: afterRaw[3] };
 
   console.log("\n─────────────────────────────────────────────");
   console.log("PlatformPaymaster staked and funded ✓");
