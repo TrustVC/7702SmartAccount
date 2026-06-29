@@ -1,13 +1,15 @@
-// Deploy PlatformPaymaster through PlatformAccountFactory
+// Deploy a PlatformPaymaster clone through PlatformAccountFactory.
+// Each clone is a cheap minimal proxy sharing the implementation's logic.
+// Prerequisites: deployImplementation.ts → deployFactory.ts must have been run first.
 //
 // Run: npx hardhat run scripts/deployPlatformPaymaster.ts --network sepolia
 //
 // Required .env:
 //   PRIVATE_KEY       — deployer wallet (pays gas)
 //   SEPOLIA_RPC_URL   — Sepolia RPC
+//   FACTORY_ADDRESS   — deployed PlatformAccountFactory
 //
 // Optional .env:
-//   FACTORY_ADDRESS   — defaults to the deployed factory below
 //   PLATFORM_ADDRESS  — paymaster owner EOA (defaults to deployer)
 //   DAILY_LIMIT_ETH   — per-user daily gas limit in ETH (default: 0 = unlimited)
 //   DEPLOY_SALT       — hex bytes32 salt for CREATE2 (default: random)
@@ -26,9 +28,9 @@ import { privateKeyToAccount } from "viem/accounts";
 import * as dotenv from "dotenv";
 dotenv.config();
 
-const FACTORY_ADDRESS =
-  (process.env.FACTORY_ADDRESS as `0x${string}`) ??
-  "0x9FCe71d971965EE345617B4bFC17305beA8e6C4b";
+if (!process.env.FACTORY_ADDRESS)
+  throw new Error("FACTORY_ADDRESS not set — run deployFactory.ts first");
+const FACTORY_ADDRESS = process.env.FACTORY_ADDRESS as `0x${string}`;
 
 const factoryAbi = parseAbi([
   "function deployPlatformPaymaster(address platformAddress, uint256 dailyLimit, bytes32 salt) external returns (address paymaster)",
@@ -38,6 +40,7 @@ const factoryAbi = parseAbi([
 async function main() {
   if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY not set");
   if (!process.env.SEPOLIA_RPC_URL) throw new Error("SEPOLIA_RPC_URL not set");
+  if (!FACTORY_ADDRESS) throw new Error("FACTORY_ADDRESS not set");
 
   const deployer = privateKeyToAccount(
     process.env.PRIVATE_KEY as `0x${string}`,
@@ -96,13 +99,10 @@ async function main() {
   console.log("  Platform owner :", platformAddress);
   console.log("─────────────────────────────────────────────");
   console.log("\nNext steps:");
-  console.log("  1. Fund paymaster: send ETH to", paymasterAddress);
-  console.log("  2. Set TDoc deployer: paymaster.setTdocDeployer(tdocAddress)");
-  console.log("  3. Add registries:   paymaster.addRegistry(registryAddress)");
-  console.log(
-    "  4. Whitelist users:  paymaster.setUserWhitelist(user, credits)",
-  );
-  console.log("  5. Stake paymaster on EntryPoint for bundler compliance");
+  console.log("  1. Fund & stake:     npx hardhat run scripts/stakePlatformPaymaster.ts --network sepolia");
+  console.log("  2. Whitelist users:  paymaster.setUserWhitelist(user, credits)");
+  console.log("  3. Add registries:   paymaster.addRegistry(registryAddress)  [optional — deployRegistry auto-adds]");
+  console.log("\nNote: tdocDeployer is inherited from the factory at clone time — no separate setup needed.");
 }
 
 main().catch((err) => {

@@ -3,8 +3,9 @@
 // Flow:
 //   1. EOA is delegated (type-4 tx) to permissionless impl if not already
 //   2. UserOp calls: execute(PAYMASTER, 0, mintDocument(registry, beneficiary, holder, tokenId, remark))
-//   3. PlatformPaymaster sponsors gas when userWhitelist[sender] > 0
-//   4. TitleEscrow address is extracted from TitleEscrowLinked event
+//   3. PlatformPaymaster sponsors gas — registry must be in authorizedRegistries (no userWhitelist needed)
+//   4. Beneficiary + holder are auto-added to authorizedCallers; TitleEscrow to authorizedTitleEscrows
+//   5. TitleEscrow address is extracted from TitleEscrowLinked event
 //
 // Run: npx ts-node scripts/mintDocumentGasless.ts
 //
