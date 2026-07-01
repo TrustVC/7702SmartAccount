@@ -2,45 +2,38 @@
 // Run after deployImplementation.ts — the factory stores the implementation address
 // and clones it cheaply for each platform via deployPlatformPaymaster().
 //
-// Run: npx hardhat run scripts/deployFactory.ts --network sepolia
+// Run:
+//   npx hardhat run scripts/deployFactory.ts --network sepolia
+//   npx hardhat run scripts/deployFactory.ts --network amoy
 //
 // Required .env:
-//   PRIVATE_KEY                — deployer wallet (pays gas)
-//   SEPOLIA_RPC_URL            — Sepolia RPC
-//   TDOC_DEPLOYER_ADDRESS      — deployed TDocDeployer contract
-//   PAYMASTER_IMPLEMENTATION   — PlatformPaymaster implementation from deployImplementation.ts
+//   PRIVATE_KEY                         — deployer wallet (pays gas)
+//   SEPOLIA_RPC_URL / AMOY_RPC_URL      — RPC for the target network
+//   TDOC_DEPLOYER_ADDRESS_<NETWORK>     — deployed TDocDeployer contract
+//   PAYMASTER_IMPLEMENTATION_<NETWORK>  — PlatformPaymaster implementation
 
 import { createPublicClient, createWalletClient, http } from "viem";
-import { sepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import hre from "hardhat";
 import * as dotenv from "dotenv";
+import { getNetworkConfig, getEnv } from "./lib/network";
 dotenv.config();
 
 async function main() {
   if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY not set");
-  if (!process.env.SEPOLIA_RPC_URL) throw new Error("SEPOLIA_RPC_URL not set");
-  if (!process.env.TDOC_DEPLOYER_ADDRESS)
-    throw new Error("TDOC_DEPLOYER_ADDRESS not set");
-  if (!process.env.PAYMASTER_IMPLEMENTATION)
-    throw new Error("PAYMASTER_IMPLEMENTATION not set — run deployImplementation.ts first");
 
-  const tdocDeployer = process.env.TDOC_DEPLOYER_ADDRESS.trim() as `0x${string}`;
-  const paymasterImpl = process.env.PAYMASTER_IMPLEMENTATION.trim() as `0x${string}`;
+  const { chain, rpcUrl, suffix } = getNetworkConfig(hre.network.name);
+  const tdocDeployer = getEnv(suffix, "TDOC_DEPLOYER_ADDRESS") as `0x${string}`;
+  const paymasterImpl = getEnv(suffix, "PAYMASTER_IMPLEMENTATION") as `0x${string}`;
 
-  const deployer = privateKeyToAccount(
-    process.env.PRIVATE_KEY as `0x${string}`,
-  );
-  const transport = http(process.env.SEPOLIA_RPC_URL);
-  const publicClient = createPublicClient({ chain: sepolia, transport });
-  const walletClient = createWalletClient({
-    account: deployer,
-    chain: sepolia,
-    transport,
-  });
+  const deployer = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+  const transport = http(rpcUrl);
+  const publicClient = createPublicClient({ chain, transport });
+  const walletClient = createWalletClient({ account: deployer, chain, transport });
 
   const artifact = await hre.artifacts.readArtifact("PlatformAccountFactory");
 
+  console.log("Network                 :", hre.network.name);
   console.log("Deployer                :", deployer.address);
   console.log("TDoc Deployer           :", tdocDeployer);
   console.log("Paymaster Implementation:", paymasterImpl);
@@ -60,13 +53,14 @@ async function main() {
 
   console.log("\n─────────────────────────────────────────────");
   console.log("PlatformAccountFactory deployed ✓");
+  console.log("  Network              :", hre.network.name);
   console.log("  Factory address      :", factoryAddress);
   console.log("  TDoc Deployer        :", tdocDeployer);
   console.log("  Paymaster impl       :", paymasterImpl);
   console.log("─────────────────────────────────────────────");
   console.log("\nNext steps:");
-  console.log("  Add to .env:  FACTORY_ADDRESS=" + factoryAddress);
-  console.log("  Deploy a paymaster clone: npx hardhat run scripts/deployPlatformPaymaster.ts --network sepolia");
+  console.log(`  Add to .env:  FACTORY_ADDRESS_${suffix}=${factoryAddress}`);
+  console.log(`  Deploy a paymaster clone: npx hardhat run scripts/deployPlatformPaymaster.ts --network ${hre.network.name}`);
 }
 
 main().catch((err) => {

@@ -1,9 +1,10 @@
-// Deploy the PlatformPaymaster implementation contract (run once per chain).
-// All future platform paymasters are cheap clones of this implementation.
+// Deploy the EIP7702Implementation contract (run once per chain).
+// EOAs point to this address via an EIP-7702 authorization to gain
+// smart-account capabilities while keeping their original private key.
 //
 // Run:
-//   npx hardhat run scripts/deployImplementation.ts --network sepolia
-//   npx hardhat run scripts/deployImplementation.ts --network amoy
+//   npx hardhat run scripts/deployEIP7702.ts --network sepolia
+//   npx hardhat run scripts/deployEIP7702.ts --network amoy
 //
 // Required .env:
 //   PRIVATE_KEY                    — deployer wallet (pays gas)
@@ -33,13 +34,13 @@ async function main() {
   const publicClient = createPublicClient({ chain, transport });
   const walletClient = createWalletClient({ account: deployer, chain, transport });
 
-  const artifact = await hre.artifacts.readArtifact("PlatformPaymaster");
+  const artifact = await hre.artifacts.readArtifact("EIP7702Implementation");
 
   console.log("Network    :", hre.network.name);
   console.log("Deployer   :", deployer.address);
   console.log("EntryPoint :", entryPoint);
   console.log("");
-  console.log("Deploying PlatformPaymaster implementation...");
+  console.log("Deploying EIP7702Implementation...");
 
   const txHash = await walletClient.deployContract({
     abi: artifact.abi,
@@ -53,14 +54,14 @@ async function main() {
   if (!implAddress) throw new Error("Deploy failed — no contract address in receipt");
 
   console.log("\n─────────────────────────────────────────────");
-  console.log("PlatformPaymaster implementation deployed ✓");
+  console.log("EIP7702Implementation deployed ✓");
   console.log("  Network    :", hre.network.name);
   console.log("  Address    :", implAddress);
   console.log("  EntryPoint :", entryPoint);
   console.log("─────────────────────────────────────────────");
   console.log("\nNext step:");
-  console.log(`  Add to .env:  PAYMASTER_IMPLEMENTATION_${suffix}=${implAddress}`);
-  console.log(`  Then run:     npx hardhat run scripts/deployFactory.ts --network ${hre.network.name}`);
+  console.log(`  Add to .env:  EIP7702_IMPL_ADDRESS_${suffix}=${implAddress}`);
+  console.log("  EOAs can now sign EIP-7702 authorizations pointing to this address.");
 }
 
 main().catch((err) => {

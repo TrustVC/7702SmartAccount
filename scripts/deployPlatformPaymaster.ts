@@ -2,12 +2,14 @@
 // Each clone is a cheap minimal proxy sharing the implementation's logic.
 // Prerequisites: deployImplementation.ts → deployFactory.ts must have been run first.
 //
-// Run: npx hardhat run scripts/deployPlatformPaymaster.ts --network sepolia
+// Run:
+//   npx hardhat run scripts/deployPlatformPaymaster.ts --network sepolia
+//   npx hardhat run scripts/deployPlatformPaymaster.ts --network amoy
 //
 // Required .env:
-//   PRIVATE_KEY       — deployer wallet (pays gas)
-//   SEPOLIA_RPC_URL   — Sepolia RPC
-//   FACTORY_ADDRESS   — deployed PlatformAccountFactory
+//   PRIVATE_KEY                    — deployer wallet (pays gas)
+//   SEPOLIA_RPC_URL / AMOY_RPC_URL — RPC for the target network
+//   FACTORY_ADDRESS_<NETWORK>      — deployed PlatformAccountFactory
 //
 // Optional .env:
 //   PLATFORM_ADDRESS  — paymaster owner EOA (defaults to deployer)
@@ -23,14 +25,11 @@ import {
   parseEventLogs,
 } from "viem";
 import { randomBytes } from "crypto";
-import { sepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
+import hre from "hardhat";
 import * as dotenv from "dotenv";
+import { getNetworkConfig, getEnv } from "./lib/network";
 dotenv.config();
-
-if (!process.env.FACTORY_ADDRESS)
-  throw new Error("FACTORY_ADDRESS not set — run deployFactory.ts first");
-const FACTORY_ADDRESS = process.env.FACTORY_ADDRESS as `0x${string}`;
 
 const factoryAbi = parseAbi([
   "function deployPlatformPaymaster(address platformAddress, uint256 dailyLimit, bytes32 salt) external returns (address paymaster)",
@@ -39,70 +38,50 @@ const factoryAbi = parseAbi([
 
 async function main() {
   if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY not set");
-  if (!process.env.SEPOLIA_RPC_URL) throw new Error("SEPOLIA_RPC_URL not set");
-  if (!FACTORY_ADDRESS) throw new Error("FACTORY_ADDRESS not set");
 
-  const deployer = privateKeyToAccount(
-    process.env.PRIVATE_KEY as `0x${string}`,
-  );
-  const transport = http(process.env.SEPOLIA_RPC_URL);
-  const publicClient = createPublicClient({ chain: sepolia, transport });
-  const walletClient = createWalletClient({
-    account: deployer,
-    chain: sepolia,
-    transport,
-  });
+  const { chain, rpcUrl, suffix } = getNetworkConfig(hre.network.name);
+  const factoryAddress = getEnv(suffix, "FACTORY_ADDRESS") as `0x${string}`;
 
-  const platformAddress = (process.env.PLATFORM_ADDRESS ??
-    deployer.address) as `0x${string}`;
+  const deployer = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+  const transport = http(rpcUrl);
+  const publicClient = createPublicClient({ chain, transport });
+  const walletClient = createWalletClient({ account: deployer, chain, transport });
+
+  const platformAddress = (process.env.PLATFORM_ADDRESS ?? deployer.address) as `0x${string}`;
   const dailyLimit = parseEther(process.env.DAILY_LIMIT_ETH ?? "0");
-  const salt = (process.env.DEPLOY_SALT ??
-    `0x${randomBytes(32).toString("hex")}`) as `0x${string}`;
+  const salt = (process.env.DEPLOY_SALT ?? `0x${randomBytes(32).toString("hex")}`) as `0x${string}`;
 
-  console.log("Factory         :", FACTORY_ADDRESS);
+  console.log("Network         :", hre.network.name);
+  console.log("Factory         :", factoryAddress);
   console.log("Platform owner  :", platformAddress);
-  console.log(
-    "Daily limit     :",
-    process.env.DAILY_LIMIT_ETH ?? "0",
-    "ETH (0 = unlimited)",
-  );
+  console.log("Daily limit     :", process.env.DAILY_LIMIT_ETH ?? "0", "ETH (0 = unlimited)");
   console.log("Salt            :", salt);
   console.log("");
 
   console.log("Deploying PlatformPaymaster via factory...");
   const txHash = await walletClient.writeContract({
-    address: FACTORY_ADDRESS,
+    address: factoryAddress,
     abi: factoryAbi,
     functionName: "deployPlatformPaymaster",
     args: [platformAddress, dailyLimit, salt],
   });
   console.log("  tx:", txHash);
 
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash: txHash,
-  });
-
-  const logs = parseEventLogs({
-    abi: factoryAbi,
-    logs: receipt.logs,
-    eventName: "PlatformOnboarded",
-  });
-
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  const logs = parseEventLogs({ abi: factoryAbi, logs: receipt.logs, eventName: "PlatformOnboarded" });
   const paymasterAddress = logs[0]?.args?.paymaster;
-  if (!paymasterAddress)
-    throw new Error("Deploy failed — no paymaster address in logs");
+  if (!paymasterAddress) throw new Error("Deploy failed — no paymaster address in logs");
 
   console.log("\n─────────────────────────────────────────────");
   console.log("PlatformPaymaster deployed ✓");
+  console.log("  Network        :", hre.network.name);
   console.log("  Address        :", paymasterAddress);
-  console.log("  Factory        :", FACTORY_ADDRESS);
+  console.log("  Factory        :", factoryAddress);
   console.log("  Platform owner :", platformAddress);
   console.log("─────────────────────────────────────────────");
   console.log("\nNext steps:");
-  console.log("  1. Fund & stake:     npx hardhat run scripts/stakePlatformPaymaster.ts --network sepolia");
-  console.log("  2. Whitelist users:  paymaster.setUserWhitelist(user, credits)");
-  console.log("  3. Add registries:   paymaster.addRegistry(registryAddress)  [optional — deployRegistry auto-adds]");
-  console.log("\nNote: tdocDeployer is inherited from the factory at clone time — no separate setup needed.");
+  console.log(`  Add to .env:  PAYMASTER_ADDRESS_${suffix}=${paymasterAddress}`);
+  console.log(`  Fund & stake: npx hardhat run scripts/stakePlatformPaymaster.ts --network ${hre.network.name}`);
 }
 
 main().catch((err) => {

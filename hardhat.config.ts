@@ -5,6 +5,7 @@ dotenv.config();
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY ?? "";
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL ?? "";
+const AMOY_RPC_URL = process.env.AMOY_RPC_URL ?? "";
 
 const config: HardhatUserConfig = {
   solidity: {
@@ -22,6 +23,11 @@ const config: HardhatUserConfig = {
       url: SEPOLIA_RPC_URL,
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
       chainId: 11155111,
+    },
+    amoy: {
+      url: AMOY_RPC_URL,
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 80002,
     },
   },
 };

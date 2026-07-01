@@ -8,14 +8,15 @@
 // Run: npx ts-node scripts/deployRegistryGasless.ts
 //
 // Required .env:
-//   PIMLICO_API_KEY      — free at dashboard.pimlico.io
-//   OWNER_PRIVATE_KEY    — whitelisted user's key (signs UserOps, needs no ETH)
-//   PRIVATE_KEY          — funded wallet (pays gas for delegation tx)
-//   SEPOLIA_RPC_URL      — Sepolia RPC
-//   PAYMASTER_ADDRESS    — deployed PlatformPaymaster (v0.8 EntryPoint)
-//   TDOC_IMPLEMENTATION  — TDoc implementation contract to clone
-//   TOKEN_NAME           — name of the TradeTrust token
-//   TOKEN_SYMBOL         — symbol of the TradeTrust token
+//   NETWORK                       — sepolia | amoy  (default: sepolia)
+//   PIMLICO_API_KEY               — free at dashboard.pimlico.io
+//   OWNER_PRIVATE_KEY             — whitelisted user's key (signs UserOps, needs no ETH)
+//   PRIVATE_KEY                   — funded wallet (pays gas for delegation tx)
+//   SEPOLIA_RPC_URL / AMOY_RPC_URL
+//   PAYMASTER_ADDRESS_<NETWORK>   — deployed PlatformPaymaster
+//   TDOC_IMPLEMENTATION_<NETWORK> — TDoc implementation contract to clone
+//   TOKEN_NAME                    — name of the TradeTrust token
+//   TOKEN_SYMBOL                  — symbol of the TradeTrust token
 
 import {
   createPublicClient,
@@ -24,18 +25,16 @@ import {
   encodeFunctionData,
   parseAbi,
 } from "viem";
-import { sepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSmartAccountClient } from "permissionless";
 import { to7702SimpleSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import { entryPoint08Address } from "viem/account-abstraction";
 import * as dotenv from "dotenv";
+import { getNetworkConfig, getEnv } from "./lib/network";
 dotenv.config();
 
-// permissionless's EIP-7702 compatible SimpleAccount (v0.8 EntryPoint)
-const PERMISSIONLESS_IMPL =
-  "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
+const PERMISSIONLESS_IMPL = "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
 
 const paymasterAbi = parseAbi([
   "function deployRegistry(address implementation, string name, string symbol) external returns (address deployed)",
@@ -44,36 +43,29 @@ const paymasterAbi = parseAbi([
 
 async function main() {
   if (!process.env.PIMLICO_API_KEY) throw new Error("PIMLICO_API_KEY not set");
-  if (!process.env.OWNER_PRIVATE_KEY)
-    throw new Error("OWNER_PRIVATE_KEY not set");
-  if (!process.env.SEPOLIA_RPC_URL) throw new Error("SEPOLIA_RPC_URL not set");
-  if (!process.env.PAYMASTER_ADDRESS)
-    throw new Error("PAYMASTER_ADDRESS not set");
-  if (!process.env.TDOC_IMPLEMENTATION)
-    throw new Error("TDOC_IMPLEMENTATION not set");
+  if (!process.env.OWNER_PRIVATE_KEY) throw new Error("OWNER_PRIVATE_KEY not set");
   if (!process.env.TOKEN_NAME) throw new Error("TOKEN_NAME not set");
   if (!process.env.TOKEN_SYMBOL) throw new Error("TOKEN_SYMBOL not set");
 
-  const PAYMASTER_ADDR = process.env.PAYMASTER_ADDRESS as `0x${string}`;
-  const PIMLICO_URL = `https://api.pimlico.io/v2/11155111/rpc?apikey=${process.env.PIMLICO_API_KEY}`;
+  const networkName = process.env.NETWORK ?? "sepolia";
+  const { chain, rpcUrl, chainId, suffix } = getNetworkConfig(networkName);
+  const PAYMASTER_ADDR = getEnv(suffix, "PAYMASTER_ADDRESS") as `0x${string}`;
+  const tdocImpl = getEnv(suffix, "TDOC_IMPLEMENTATION") as `0x${string}`;
+  const PIMLICO_URL = `https://api.pimlico.io/v2/${chainId}/rpc?apikey=${process.env.PIMLICO_API_KEY}`;
 
-  const ownerAccount = privateKeyToAccount(
-    process.env.OWNER_PRIVATE_KEY as `0x${string}`,
-  );
-  const transport = http(process.env.SEPOLIA_RPC_URL);
-  const publicClient = createPublicClient({ chain: sepolia, transport });
+  const ownerAccount = privateKeyToAccount(process.env.OWNER_PRIVATE_KEY as `0x${string}`);
+  const transport = http(rpcUrl);
+  const publicClient = createPublicClient({ chain, transport });
 
+  console.log("Network                  :", networkName);
   console.log("Owner (whitelisted user) :", ownerAccount.address);
   console.log("Paymaster                :", PAYMASTER_ADDR);
   console.log("Permissionless impl      :", PERMISSIONLESS_IMPL);
-  console.log("TDoc Implementation      :", process.env.TDOC_IMPLEMENTATION);
+  console.log("TDoc Implementation      :", tdocImpl);
   console.log("Token name               :", process.env.TOKEN_NAME);
   console.log("Token symbol             :", process.env.TOKEN_SYMBOL);
   console.log("");
 
-  // Check current delegation — must point to permissionless impl before submitting UserOp.
-  // Pimlico simulates validateUserOp against current on-chain code, so re-delegation via
-  // the UserOp's authorizationList is too late; we need a type-4 tx first.
   const code = await publicClient.getCode({ address: ownerAccount.address });
   const currentDelegate = code?.startsWith("0xef0100")
     ? (`0x${code.slice(8, 48)}` as `0x${string}`)
@@ -84,24 +76,12 @@ async function main() {
     if (!process.env.PRIVATE_KEY)
       throw new Error("PRIVATE_KEY needed for EIP-7702 delegation (pays gas)");
 
-    const deployerAccount = privateKeyToAccount(
-      process.env.PRIVATE_KEY as `0x${string}`,
-    );
-    const ownerWallet = createWalletClient({
-      account: ownerAccount,
-      chain: sepolia,
-      transport,
-    });
-    const deployerWallet = createWalletClient({
-      account: deployerAccount,
-      chain: sepolia,
-      transport,
-    });
+    const deployerAccount = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+    const ownerWallet = createWalletClient({ account: ownerAccount, chain, transport });
+    const deployerWallet = createWalletClient({ account: deployerAccount, chain, transport });
 
     console.log("Re-delegating EOA to permissionless impl...");
-    const ownerNonce = await publicClient.getTransactionCount({
-      address: ownerAccount.address,
-    });
+    const ownerNonce = await publicClient.getTransactionCount({ address: ownerAccount.address });
     const authorization = await ownerWallet.signAuthorization({
       contractAddress: PERMISSIONLESS_IMPL,
       nonce: ownerNonce,
@@ -118,13 +98,8 @@ async function main() {
   }
   console.log("");
 
-  // Build the smart account — handles EIP-712 signing and v0.8 delegation automatically
-  const account = await to7702SimpleSmartAccount({
-    client: publicClient,
-    owner: ownerAccount,
-  });
+  const account = await to7702SimpleSmartAccount({ client: publicClient, owner: ownerAccount });
 
-  // Custom paymaster middleware — no off-chain data needed, paymaster validates on-chain
   const paymaster = {
     async getPaymasterStubData() {
       return {
@@ -152,29 +127,21 @@ async function main() {
 
   const smartAccountClient = createSmartAccountClient({
     account,
-    chain: sepolia,
+    chain,
     bundlerTransport: http(PIMLICO_URL),
     paymaster,
     userOperation: {
       estimateFeesPerGas: async () => {
         const { fast } = await pimlicoClient.getUserOperationGasPrice();
-        return {
-          maxFeePerGas: fast.maxFeePerGas,
-          maxPriorityFeePerGas: fast.maxPriorityFeePerGas,
-        };
+        return { maxFeePerGas: fast.maxFeePerGas, maxPriorityFeePerGas: fast.maxPriorityFeePerGas };
       },
     },
   });
 
-  // deployRegistry calldata — smart account wraps this as execute(PAYMASTER, 0, data)
   const deployRegistryData = encodeFunctionData({
     abi: paymasterAbi,
     functionName: "deployRegistry",
-    args: [
-      process.env.TDOC_IMPLEMENTATION as `0x${string}`,
-      process.env.TOKEN_NAME!,
-      process.env.TOKEN_SYMBOL!,
-    ],
+    args: [tdocImpl, process.env.TOKEN_NAME!, process.env.TOKEN_SYMBOL!],
   });
 
   console.log("Sending UserOp: deployRegistry via PlatformPaymaster...");
@@ -189,8 +156,8 @@ async function main() {
   console.log("  tx      :", txHash);
   console.log("  Deployer:", ownerAccount.address);
   console.log("─────────────────────────────────────────────");
-  console.log("\nFind the deployed registry address in the RegistryDeployed");
-  console.log("event on tx:", txHash);
+  console.log("\nFind the deployed registry address in the RegistryDeployed event on tx:", txHash);
+  console.log(`Add to .env:  REGISTRY_ADDRESS_${suffix}=<address from event>`);
 }
 
 main().catch((err) => {

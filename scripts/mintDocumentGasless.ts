@@ -3,25 +3,25 @@
 // Flow:
 //   1. EOA is delegated (type-4 tx) to permissionless impl if not already
 //   2. UserOp calls: execute(PAYMASTER, 0, mintDocument(registry, beneficiary, holder, tokenId, remark))
-//   3. PlatformPaymaster sponsors gas — registry must be in authorizedRegistries (no userWhitelist needed)
+//   3. PlatformPaymaster sponsors gas — registry must be in authorizedRegistries
 //   4. Beneficiary + holder are auto-added to authorizedCallers; TitleEscrow to authorizedTitleEscrows
-//   5. TitleEscrow address is extracted from TitleEscrowLinked event
 //
 // Run: npx ts-node scripts/mintDocumentGasless.ts
 //
 // Required .env:
-//   PIMLICO_API_KEY        — free at dashboard.pimlico.io
-//   OWNER_PRIVATE_KEY      — whitelisted user's key (signs UserOps, needs no ETH)
-//   PRIVATE_KEY            — funded wallet (pays gas for delegation tx if needed)
-//   SEPOLIA_RPC_URL        — Sepolia RPC
-//   PAYMASTER_ADDRESS      — deployed PlatformPaymaster (v0.8 EntryPoint)
-//   REGISTRY_ADDRESS       — authorized TradeTrustToken registry to mint on
-//   BENEFICIARY_ADDRESS    — address that becomes the beneficiary of the document
-//   HOLDER_ADDRESS         — address that becomes the holder of the document
-//   TOKEN_ID               — document token ID (uint256, e.g. a keccak256 doc hash)
+//   NETWORK                      — sepolia | amoy  (default: sepolia)
+//   PIMLICO_API_KEY              — free at dashboard.pimlico.io
+//   OWNER_PRIVATE_KEY            — whitelisted user's key (signs UserOps, needs no ETH)
+//   PRIVATE_KEY                  — funded wallet (pays gas for delegation tx if needed)
+//   SEPOLIA_RPC_URL / AMOY_RPC_URL
+//   PAYMASTER_ADDRESS_<NETWORK>  — deployed PlatformPaymaster
+//   REGISTRY_ADDRESS_<NETWORK>   — authorized TradeTrustToken registry
+//   BENEFICIARY_ADDRESS          — document beneficiary
+//   HOLDER_ADDRESS               — document holder
+//   TOKEN_ID                     — document token ID (uint256)
 //
 // Optional .env:
-//   REMARK                 — hex-encoded remark bytes (default: 0x)
+//   REMARK — hex-encoded remark bytes (default: 0x)
 
 import {
   createPublicClient,
@@ -32,17 +32,16 @@ import {
   parseAbi,
   decodeEventLog,
 } from "viem";
-import { sepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSmartAccountClient } from "permissionless";
 import { to7702SimpleSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import { entryPoint08Address } from "viem/account-abstraction";
 import * as dotenv from "dotenv";
+import { getNetworkConfig, getEnv } from "./lib/network";
 dotenv.config();
 
-const PERMISSIONLESS_IMPL =
-  "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
+const PERMISSIONLESS_IMPL = "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
 
 const paymasterAbi = parseAbi([
   "function mintDocument(address registry, address beneficiary, address holder, uint256 tokenId, bytes remark) external returns (address titleEscrow)",
@@ -51,38 +50,30 @@ const paymasterAbi = parseAbi([
 
 async function main() {
   if (!process.env.PIMLICO_API_KEY) throw new Error("PIMLICO_API_KEY not set");
-  if (!process.env.OWNER_PRIVATE_KEY)
-    throw new Error("OWNER_PRIVATE_KEY not set");
-  if (!process.env.SEPOLIA_RPC_URL) throw new Error("SEPOLIA_RPC_URL not set");
-  if (!process.env.PAYMASTER_ADDRESS)
-    throw new Error("PAYMASTER_ADDRESS not set");
-  if (!process.env.REGISTRY_ADDRESS)
-    throw new Error("REGISTRY_ADDRESS not set");
-  if (!process.env.BENEFICIARY_ADDRESS)
-    throw new Error("BENEFICIARY_ADDRESS not set");
+  if (!process.env.OWNER_PRIVATE_KEY) throw new Error("OWNER_PRIVATE_KEY not set");
+  if (!process.env.BENEFICIARY_ADDRESS) throw new Error("BENEFICIARY_ADDRESS not set");
   if (!process.env.HOLDER_ADDRESS) throw new Error("HOLDER_ADDRESS not set");
   if (!process.env.TOKEN_ID) throw new Error("TOKEN_ID not set");
 
-  const PAYMASTER_ADDR = process.env.PAYMASTER_ADDRESS as `0x${string}`;
-  const registry = process.env.REGISTRY_ADDRESS as `0x${string}`;
+  const networkName = process.env.NETWORK ?? "sepolia";
+  const { chain, rpcUrl, chainId, suffix } = getNetworkConfig(networkName);
+  const PAYMASTER_ADDR = getEnv(suffix, "PAYMASTER_ADDRESS") as `0x${string}`;
+  const registry = getEnv(suffix, "REGISTRY_ADDRESS") as `0x${string}`;
+  const PIMLICO_URL = `https://api.pimlico.io/v2/${chainId}/rpc?apikey=${process.env.PIMLICO_API_KEY}`;
+
   const beneficiary = process.env.BENEFICIARY_ADDRESS as `0x${string}`;
   const holder = process.env.HOLDER_ADDRESS as `0x${string}`;
   const tokenId = BigInt(process.env.TOKEN_ID);
   const rawRemark = process.env.REMARK ?? "";
   const remark: `0x${string}` = rawRemark
-    ? rawRemark.startsWith("0x")
-      ? (rawRemark as `0x${string}`)
-      : toHex(rawRemark)
+    ? rawRemark.startsWith("0x") ? (rawRemark as `0x${string}`) : toHex(rawRemark)
     : "0x";
 
-  const PIMLICO_URL = `https://api.pimlico.io/v2/11155111/rpc?apikey=${process.env.PIMLICO_API_KEY}`;
+  const ownerAccount = privateKeyToAccount(process.env.OWNER_PRIVATE_KEY as `0x${string}`);
+  const transport = http(rpcUrl);
+  const publicClient = createPublicClient({ chain, transport });
 
-  const ownerAccount = privateKeyToAccount(
-    process.env.OWNER_PRIVATE_KEY as `0x${string}`,
-  );
-  const transport = http(process.env.SEPOLIA_RPC_URL);
-  const publicClient = createPublicClient({ chain: sepolia, transport });
-
+  console.log("Network                  :", networkName);
   console.log("Owner (whitelisted user) :", ownerAccount.address);
   console.log("Paymaster                :", PAYMASTER_ADDR);
   console.log("Permissionless impl      :", PERMISSIONLESS_IMPL);
@@ -93,7 +84,6 @@ async function main() {
   console.log("Remark                   :", remark);
   console.log("");
 
-  // Check delegation — must point to permissionless impl before submitting UserOp
   const code = await publicClient.getCode({ address: ownerAccount.address });
   const currentDelegate = code?.startsWith("0xef0100")
     ? (`0x${code.slice(8, 48)}` as `0x${string}`)
@@ -104,24 +94,12 @@ async function main() {
     if (!process.env.PRIVATE_KEY)
       throw new Error("PRIVATE_KEY needed for EIP-7702 delegation (pays gas)");
 
-    const deployerAccount = privateKeyToAccount(
-      process.env.PRIVATE_KEY as `0x${string}`,
-    );
-    const ownerWallet = createWalletClient({
-      account: ownerAccount,
-      chain: sepolia,
-      transport,
-    });
-    const deployerWallet = createWalletClient({
-      account: deployerAccount,
-      chain: sepolia,
-      transport,
-    });
+    const deployerAccount = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+    const ownerWallet = createWalletClient({ account: ownerAccount, chain, transport });
+    const deployerWallet = createWalletClient({ account: deployerAccount, chain, transport });
 
     console.log("Re-delegating EOA to permissionless impl...");
-    const ownerNonce = await publicClient.getTransactionCount({
-      address: ownerAccount.address,
-    });
+    const ownerNonce = await publicClient.getTransactionCount({ address: ownerAccount.address });
     const authorization = await ownerWallet.signAuthorization({
       contractAddress: PERMISSIONLESS_IMPL,
       nonce: ownerNonce,
@@ -138,10 +116,7 @@ async function main() {
   }
   console.log("");
 
-  const account = await to7702SimpleSmartAccount({
-    client: publicClient,
-    owner: ownerAccount,
-  });
+  const account = await to7702SimpleSmartAccount({ client: publicClient, owner: ownerAccount });
 
   const pimlicoClient = createPimlicoClient({
     transport: http(PIMLICO_URL),
@@ -150,7 +125,7 @@ async function main() {
 
   const smartAccountClient = createSmartAccountClient({
     account,
-    chain: sepolia,
+    chain,
     bundlerTransport: http(PIMLICO_URL),
     paymaster: {
       async getPaymasterStubData() {
@@ -174,10 +149,7 @@ async function main() {
     userOperation: {
       estimateFeesPerGas: async () => {
         const { fast } = await pimlicoClient.getUserOperationGasPrice();
-        return {
-          maxFeePerGas: fast.maxFeePerGas,
-          maxPriorityFeePerGas: fast.maxPriorityFeePerGas,
-        };
+        return { maxFeePerGas: fast.maxFeePerGas, maxPriorityFeePerGas: fast.maxPriorityFeePerGas };
       },
     },
   });
@@ -195,24 +167,15 @@ async function main() {
     data: mintData,
   });
 
-  const txReceipt = await publicClient.getTransactionReceipt({
-    hash: txHash as `0x${string}`,
-  });
+  const txReceipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` });
 
   let titleEscrowAddress: string | undefined;
   for (const log of txReceipt.logs) {
     try {
-      const decoded = decodeEventLog({
-        abi: paymasterAbi,
-        data: log.data,
-        topics: log.topics,
-        eventName: "TitleEscrowLinked",
-      });
+      const decoded = decodeEventLog({ abi: paymasterAbi, data: log.data, topics: log.topics, eventName: "TitleEscrowLinked" });
       titleEscrowAddress = decoded.args.titleEscrow as string;
       break;
-    } catch {
-      /* not this event */
-    }
+    } catch { /* not this event */ }
   }
 
   console.log("\n─────────────────────────────────────────────");
@@ -222,14 +185,11 @@ async function main() {
   console.log("  Token ID     :", tokenId.toString());
   console.log("  Beneficiary  :", beneficiary);
   console.log("  Holder       :", holder);
-  console.log(
-    "  TitleEscrow  :",
-    titleEscrowAddress ?? "(check TitleEscrowLinked event on tx)",
-  );
+  console.log("  TitleEscrow  :", titleEscrowAddress ?? "(check TitleEscrowLinked event on tx)");
   console.log("─────────────────────────────────────────────");
-  console.log(
-    "\nThe TitleEscrow is now in authorizedTitleEscrows on the paymaster.",
-  );
+  if (titleEscrowAddress) {
+    console.log(`\nAdd to .env:  TITLE_ESCROW_ADDRESS_${suffix}=${titleEscrowAddress}`);
+  }
 }
 
 main().catch((err) => {
