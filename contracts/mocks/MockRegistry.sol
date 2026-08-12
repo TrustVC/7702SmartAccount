@@ -53,6 +53,9 @@ contract MockRegistry {
         uint256,
         bytes calldata
     ) external returns (address titleEscrow) {
+        if (!_roles[MINTER_ROLE][msg.sender]) {
+            revert AccessControlUnauthorizedAccount(msg.sender, MINTER_ROLE);
+        }
         titleEscrow = address(new MockTitleEscrow());
         lastTitleEscrow = titleEscrow;
     }

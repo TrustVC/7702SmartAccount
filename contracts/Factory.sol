@@ -8,7 +8,6 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 contract PlatformAccountFactory is Ownable {
     address public tdocDeployer;
     address public paymasterImplementation;
-    mapping(address => address) public attachedPaymaster;
 
     event PlatformOnboarded(
         address indexed platformAddress,
@@ -25,13 +24,6 @@ contract PlatformAccountFactory is Ownable {
         require(_paymasterImplementation != address(0), "Zero address");
         tdocDeployer = _tdocDeployer;
         paymasterImplementation = _paymasterImplementation;
-    }
-
-    function setAttachedPaymaster(
-        address platformAddress
-    ) external view returns (address) {
-        address paymaster = attachedPaymaster[platformAddress];
-        return paymaster;
     }
 
     function updateTdocDeployer(address _tdocDeployer) external onlyOwner {
