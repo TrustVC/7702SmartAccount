@@ -21,6 +21,8 @@ contract PlatformAccountFactory is Ownable {
         address _tdocDeployer,
         address _paymasterImplementation
     ) Ownable(msg.sender) {
+        require(_tdocDeployer != address(0), "Zero address");
+        require(_paymasterImplementation != address(0), "Zero address");
         tdocDeployer = _tdocDeployer;
         paymasterImplementation = _paymasterImplementation;
     }
