@@ -278,6 +278,36 @@ describe("PlatformPaymaster", function () {
         paymasterAsOther.write.deployRegistry([impl.address, "TT", "TT"]),
       ).to.be.rejectedWith("No deployment credits");
     });
+
+    it("hands admin + all operational roles to msg.sender; paymaster keeps minter/restorer/accepter but not admin", async function () {
+      const { paymaster, paymasterAsOther, other, impl, publicClient } =
+        await loadFixture(deployFixture);
+      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
+
+      const hash = await paymasterAsOther.write.deployRegistry([impl.address, "TT", "TT"]);
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      const events = await paymaster.getEvents.RegistryDeployed();
+      const deployedAddr = events[0].args.deployed as `0x${string}`;
+      const registry = await hre.viem.getContractAt("MockRegistry", deployedAddr);
+
+      const DEFAULT_ADMIN_ROLE = await registry.read.DEFAULT_ADMIN_ROLE();
+      const MINTER_ROLE = await registry.read.MINTER_ROLE();
+      const RESTORER_ROLE = await registry.read.RESTORER_ROLE();
+      const ACCEPTER_ROLE = await registry.read.ACCEPTER_ROLE();
+
+      // msg.sender (the deploying EOA) ends up holding all four roles
+      expect(await registry.read.hasRole([DEFAULT_ADMIN_ROLE, other.account.address])).to.be.true;
+      expect(await registry.read.hasRole([RESTORER_ROLE, other.account.address])).to.be.true;
+      expect(await registry.read.hasRole([ACCEPTER_ROLE, other.account.address])).to.be.true;
+      expect(await registry.read.hasRole([MINTER_ROLE, other.account.address])).to.be.true;
+
+      // paymaster relinquishes admin but keeps the operational roles
+      expect(await registry.read.hasRole([DEFAULT_ADMIN_ROLE, paymaster.address])).to.be.false;
+      expect(await registry.read.hasRole([RESTORER_ROLE, paymaster.address])).to.be.true;
+      expect(await registry.read.hasRole([ACCEPTER_ROLE, paymaster.address])).to.be.true;
+      expect(await registry.read.hasRole([MINTER_ROLE, paymaster.address])).to.be.true;
+    });
   });
 
   // ─── mintDocument ─────────────────────────────────────────────────────────

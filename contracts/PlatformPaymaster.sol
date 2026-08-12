@@ -49,6 +49,9 @@ contract PlatformPaymaster is BasePaymaster {
         );
 
     bytes32 private constant DEFAULT_ADMIN_ROLE = bytes32(0);
+    bytes32 private constant RESTORER_ROLE = keccak256("RESTORER_ROLE");
+    bytes32 private constant ACCEPTER_ROLE = keccak256("ACCEPTER_ROLE");
+    bytes32 private constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     ITDocDeployer public tdocDeployer;
 
@@ -141,13 +144,11 @@ contract PlatformPaymaster is BasePaymaster {
         bytes memory params = abi.encode(name, symbol, address(this));
         deployed = tdocDeployer.deploy(implementation, params);
 
-        // Hand admin to the calling EOA
         IAccessControl(deployed).grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        IAccessControl(deployed).grantRole(RESTORER_ROLE, msg.sender);
+        IAccessControl(deployed).grantRole(ACCEPTER_ROLE, msg.sender);
+        IAccessControl(deployed).grantRole(MINTER_ROLE, msg.sender);
 
-        // Paymaster keeps only the operational roles it needs
-        // (MINTER_ROLE, RESTORER_ROLE, ACCEPTER_ROLE were granted to address(this) via initialize)
-
-        // Relinquish admin — EOA is now sole admin
         IAccessControl(deployed).renounceRole(
             DEFAULT_ADMIN_ROLE,
             address(this)
