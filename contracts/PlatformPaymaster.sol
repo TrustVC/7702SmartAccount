@@ -44,9 +44,14 @@ contract PlatformPaymaster is BasePaymaster {
     bytes4 private constant DEPLOY_REGISTRY_SEL =
         bytes4(keccak256("deployRegistry(address,string,string)"));
     bytes4 private constant MINT_DOCUMENT_SEL =
-        bytes4(keccak256("mintDocument(address,address,address,uint256,bytes)"));
+        bytes4(
+            keccak256("mintDocument(address,address,address,uint256,bytes)")
+        );
 
     bytes32 private constant DEFAULT_ADMIN_ROLE = bytes32(0);
+    bytes32 private constant RESTORER_ROLE = keccak256("RESTORER_ROLE");
+    bytes32 private constant ACCEPTER_ROLE = keccak256("ACCEPTER_ROLE");
+    bytes32 private constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     ITDocDeployer public tdocDeployer;
 
@@ -55,6 +60,10 @@ contract PlatformPaymaster is BasePaymaster {
     mapping(address => bool) public authorizedTitleEscrows;
     // remaining deployment credits per user; max 3 per user
     mapping(address => uint256) public userWhitelist;
+    // Addresses permitted to call title escrow functions via this paymaster
+    mapping(address => bool) public authorizedCallers;
+    // Count of documents minted per user
+    mapping(address => uint256) public documentsMinted;
 
     // Daily spend tracking — paymaster's own storage, always allowed
     mapping(address => uint256) public dailySpend;
@@ -63,28 +72,38 @@ contract PlatformPaymaster is BasePaymaster {
 
     event RegistryAdded(address indexed registry);
     event RegistryRemoved(address indexed registry);
-    event TitleEscrowLinked(address indexed titleEscrow, address indexed registry);
+    event TitleEscrowLinked(
+        address indexed titleEscrow,
+        address indexed registry
+    );
+    event TitleEscrowAdded(address indexed titleEscrow);
+    event TitleEscrowRemoved(address indexed titleEscrow);
     event UserWhitelistUpdated(address indexed user, uint256 credits);
     event RegistryDeployed(
         address indexed user,
         address indexed deployed,
         uint256 creditsLeft
     );
+    event AuthorizedCallerUpdated(address indexed caller, bool authorized);
     event UserOpSponsored(address indexed user, uint256 gasCost);
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    constructor(
-        IEntryPoint _entryPoint,
+    // Deployed once as the shared implementation; BasePaymaster sets owner = msg.sender.
+    // That non-zero owner prevents initialize() from running on the implementation itself.
+    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {}
+
+    // Called by the factory immediately after cloneDeterministic().
+    // A fresh clone has all-zero storage, so owner() == address(0) exactly once.
+    function initialize(
         address _owner,
-        uint256 _dailyLimit
-    ) BasePaymaster(_entryPoint) {
+        uint256 _dailyLimit,
+        address _tdocDeployer
+    ) external {
+        require(owner() == address(0), "Already initialized");
+        require(_owner != address(0), "Zero owner");
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
-    }
-
-    function setTdocDeployer(address _tdocDeployer) external onlyOwner {
-        require(_tdocDeployer != address(0), "Zero address");
         tdocDeployer = ITDocDeployer(_tdocDeployer);
     }
 
@@ -97,6 +116,13 @@ contract PlatformPaymaster is BasePaymaster {
         require(credits <= 3, "Exceeds max credits of 3");
         userWhitelist[user] = credits;
         emit UserWhitelistUpdated(user, credits);
+    }
+
+    // add function to remove user from whitelist
+    function removeUserFromWhitelist(address user) external onlyOwner {
+        require(user != address(0), "Zero address");
+        userWhitelist[user] = 0;
+        emit UserWhitelistUpdated(user, 0);
     }
 
     // Deploys a TDoc clone on behalf of a whitelisted user; consumes one credit.
@@ -118,14 +144,15 @@ contract PlatformPaymaster is BasePaymaster {
         bytes memory params = abi.encode(name, symbol, address(this));
         deployed = tdocDeployer.deploy(implementation, params);
 
-        // Hand admin to the calling EOA
         IAccessControl(deployed).grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        IAccessControl(deployed).grantRole(RESTORER_ROLE, msg.sender);
+        IAccessControl(deployed).grantRole(ACCEPTER_ROLE, msg.sender);
+        IAccessControl(deployed).grantRole(MINTER_ROLE, msg.sender);
 
-        // Paymaster keeps only the operational roles it needs
-        // (MINTER_ROLE, RESTORER_ROLE, ACCEPTER_ROLE were granted to address(this) via initialize)
-
-        // Relinquish admin — EOA is now sole admin
-        IAccessControl(deployed).renounceRole(DEFAULT_ADMIN_ROLE, address(this));
+        IAccessControl(deployed).renounceRole(
+            DEFAULT_ADMIN_ROLE,
+            address(this)
+        );
 
         authorizedRegistries[deployed] = true;
         emit RegistryAdded(deployed);
@@ -143,11 +170,20 @@ contract PlatformPaymaster is BasePaymaster {
         bytes calldata remark
     ) external returns (address titleEscrow) {
         require(authorizedRegistries[registry], "registry not authorized");
-        require(userWhitelist[msg.sender] > 0, "not whitelisted");
 
-        titleEscrow = ITradeTrustToken(registry).mint(beneficiary, holder, tokenId, remark);
+        titleEscrow = ITradeTrustToken(registry).mint(
+            beneficiary,
+            holder,
+            tokenId,
+            remark
+        );
+
+        // Auto-authorize beneficiary and holder to call title escrow functions
+        authorizedCallers[beneficiary] = true;
+        authorizedCallers[holder] = true;
 
         authorizedTitleEscrows[titleEscrow] = true;
+        documentsMinted[msg.sender]++;
         emit TitleEscrowLinked(titleEscrow, registry);
     }
 
@@ -160,6 +196,28 @@ contract PlatformPaymaster is BasePaymaster {
     function removeRegistry(address registry) external onlyOwner {
         authorizedRegistries[registry] = false;
         emit RegistryRemoved(registry);
+    }
+
+    function addTitleEscrow(address titleEscrow) external onlyOwner {
+        require(titleEscrow != address(0), "Zero address");
+        authorizedTitleEscrows[titleEscrow] = true;
+        emit TitleEscrowAdded(titleEscrow);
+    }
+
+    function removeTitleEscrow(address titleEscrow) external onlyOwner {
+        authorizedTitleEscrows[titleEscrow] = false;
+        emit TitleEscrowRemoved(titleEscrow);
+    }
+
+    function addAuthorizedCaller(address caller) external onlyOwner {
+        require(caller != address(0), "Zero address");
+        authorizedCallers[caller] = true;
+        emit AuthorizedCallerUpdated(caller, true);
+    }
+
+    function removeAuthorizedCaller(address caller) external onlyOwner {
+        authorizedCallers[caller] = false;
+        emit AuthorizedCallerUpdated(caller, false);
     }
 
     function setDailyLimit(uint256 _dailyLimit) external onlyOwner {
@@ -194,32 +252,50 @@ contract PlatformPaymaster is BasePaymaster {
         );
 
         // Path A — calling an authorized registry or title escrow (regular sponsored op)
+        // Only authorizedCallers or the platform owner may be sponsored here.
         if (authorizedRegistries[target] || authorizedTitleEscrows[target]) {
+            if (!authorizedCallers[sender] && sender != owner()) {
+                emit UserOpRejected(sender, "caller not authorized");
+                return ("", _packValidationData(true, 0, 0));
+            }
             if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
                 emit UserOpRejected(sender, "daily limit exceeded");
                 return ("", _packValidationData(true, 0, 0));
             }
-            return (abi.encode(sender, maxCost, false), _packValidationData(false, 0, 0));
+            return (
+                abi.encode(sender, maxCost, false),
+                _packValidationData(false, 0, 0)
+            );
         }
 
         // Path B — gasless paymaster call (deployRegistry or mintDocument)
         // Double-spend safe: EntryPoint sequential nonces allow only one
         // pending UserOp per sender in the mempool at a time.
         if (target == address(this)) {
-            if (userWhitelist[sender] == 0) {
-                emit UserOpRejected(sender, "not whitelisted");
-                return ("", _packValidationData(true, 0, 0));
-            }
             bytes4 innerSel;
-            assembly { innerSel := mload(add(innerData, 32)) }
+            assembly {
+                innerSel := mload(add(innerData, 32))
+            }
 
             if (innerSel == DEPLOY_REGISTRY_SEL) {
+                // deployRegistry requires whitelist credits — platform-level gate
+                if (userWhitelist[sender] == 0) {
+                    emit UserOpRejected(sender, "not whitelisted");
+                    return ("", _packValidationData(true, 0, 0));
+                }
                 // credits consumed inside deployRegistry; flag as deployment to skip daily spend
-                return (abi.encode(sender, maxCost, true), _packValidationData(false, 0, 0));
+                return (
+                    abi.encode(sender, maxCost, true),
+                    _packValidationData(false, 0, 0)
+                );
             }
+
             if (innerSel == MINT_DOCUMENT_SEL) {
-                // credits NOT consumed; track daily spend normally
-                return (abi.encode(sender, maxCost, false), _packValidationData(false, 0, 0));
+                // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed
+                return (
+                    abi.encode(sender, maxCost, false),
+                    _packValidationData(false, 0, 0)
+                );
             }
 
             emit UserOpRejected(sender, "unauthorized paymaster call");
@@ -238,7 +314,10 @@ contract PlatformPaymaster is BasePaymaster {
     ) internal override {
         if (mode == PostOpMode.postOpReverted) return;
 
-        (address sender, , bool isDeployment) = abi.decode(context, (address, uint256, bool));
+        (address sender, , bool isDeployment) = abi.decode(
+            context,
+            (address, uint256, bool)
+        );
 
         // Deployment ops are credit-gated; skip daily spend tracking for them
         if (!isDeployment) {

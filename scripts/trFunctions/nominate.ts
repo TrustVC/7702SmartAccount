@@ -20,18 +20,18 @@ const abi = parseAbi([
 ]);
 
 async function main() {
-  const contract = getTRContract();
   const nominee = process.env.NOMINEE_ADDR as `0x${string}`;
   const remark = toRemarkBytes(process.env.REMARK ?? "");
 
   if (!nominee) throw new Error("NOMINEE_ADDR not set");
 
-  console.log("TR Contract :", contract);
   console.log("Nominee     :", nominee);
   console.log("Remark      :", process.env.REMARK ?? "(empty)");
   console.log("");
 
-  const { smartAccountClient, ownerAddress } = await buildClient();
+  const { smartAccountClient, ownerAddress, suffix } = await buildClient();
+  const contract = getTRContract(suffix);
+  console.log("TR Contract :", contract);
   console.log("\nSending nominate() UserOp...");
 
   const txHash = await smartAccountClient.sendTransaction({

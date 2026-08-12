@@ -17,14 +17,14 @@ dotenv.config();
 const abi = parseAbi(["function shred(bytes calldata _remark) external"]);
 
 async function main() {
-  const contract = getTRContract();
   const remark = toRemarkBytes(process.env.REMARK ?? "");
 
-  console.log("TR Contract :", contract);
   console.log("Remark      :", process.env.REMARK ?? "(empty)");
   console.log("");
 
-  const { smartAccountClient, ownerAddress } = await buildClient();
+  const { smartAccountClient, ownerAddress, suffix } = await buildClient();
+  const contract = getTRContract(suffix);
+  console.log("TR Contract :", contract);
   console.log("\nSending shred() UserOp...");
 
   const txHash = await smartAccountClient.sendTransaction({
