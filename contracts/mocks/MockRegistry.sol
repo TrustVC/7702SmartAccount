@@ -7,19 +7,38 @@ contract MockTitleEscrow {}
 
 contract MockRegistry {
     bytes32 public constant DEFAULT_ADMIN_ROLE = bytes32(0);
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant RESTORER_ROLE = keccak256("RESTORER_ROLE");
+    bytes32 public constant ACCEPTER_ROLE = keccak256("ACCEPTER_ROLE");
+
     mapping(bytes32 => mapping(address => bool)) private _roles;
     address public lastTitleEscrow;
 
+    error AccessControlUnauthorizedAccount(address account, bytes32 role);
+    error AccessControlBadConfirmation();
+
+    // Mirrors RegistryAccess.__RegistryAccess_init: the real registry grants
+    // all four roles to the single admin address passed at deploy time.
     constructor(address initialAdmin) {
         _roles[DEFAULT_ADMIN_ROLE][initialAdmin] = true;
+        _roles[MINTER_ROLE][initialAdmin] = true;
+        _roles[RESTORER_ROLE][initialAdmin] = true;
+        _roles[ACCEPTER_ROLE][initialAdmin] = true;
     }
 
-    // IAccessControl
+    // IAccessControl — mirrors OZ's default: granting any role requires
+    // DEFAULT_ADMIN_ROLE, since the real registry never overrides role admins.
     function grantRole(bytes32 role, address account) external {
+        if (!_roles[DEFAULT_ADMIN_ROLE][msg.sender]) {
+            revert AccessControlUnauthorizedAccount(msg.sender, DEFAULT_ADMIN_ROLE);
+        }
         _roles[role][account] = true;
     }
 
-    function renounceRole(bytes32 role, address) external {
+    function renounceRole(bytes32 role, address callerConfirmation) external {
+        if (callerConfirmation != msg.sender) {
+            revert AccessControlBadConfirmation();
+        }
         _roles[role][msg.sender] = false;
     }
 

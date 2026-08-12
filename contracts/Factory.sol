@@ -8,8 +8,12 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 contract PlatformAccountFactory is Ownable {
     address public tdocDeployer;
     address public paymasterImplementation;
+    mapping(address => address) public attachedPaymaster;
 
-    event PlatformOnboarded(address indexed platformAddress, address indexed paymaster);
+    event PlatformOnboarded(
+        address indexed platformAddress,
+        address indexed paymaster
+    );
     event TdocDeployerUpdated(address indexed newDeployer);
     event ImplementationUpdated(address indexed newImplementation);
 
@@ -19,6 +23,13 @@ contract PlatformAccountFactory is Ownable {
     ) Ownable(msg.sender) {
         tdocDeployer = _tdocDeployer;
         paymasterImplementation = _paymasterImplementation;
+    }
+
+    function setAttachedPaymaster(
+        address platformAddress
+    ) external view returns (address) {
+        address paymaster = attachedPaymaster[platformAddress];
+        return paymaster;
     }
 
     function updateTdocDeployer(address _tdocDeployer) external onlyOwner {
@@ -39,12 +50,23 @@ contract PlatformAccountFactory is Ownable {
         bytes32 salt
     ) external returns (address paymaster) {
         paymaster = Clones.cloneDeterministic(paymasterImplementation, salt);
-        PlatformPaymaster(payable(paymaster)).initialize(platformAddress, dailyLimit, tdocDeployer);
+        PlatformPaymaster(payable(paymaster)).initialize(
+            platformAddress,
+            dailyLimit,
+            tdocDeployer
+        );
         emit PlatformOnboarded(platformAddress, paymaster);
     }
 
     // Address is determined solely by implementation + salt (not by constructor args).
-    function computePaymasterAddress(bytes32 salt) external view returns (address) {
-        return Clones.predictDeterministicAddress(paymasterImplementation, salt, address(this));
+    function computePaymasterAddress(
+        bytes32 salt
+    ) external view returns (address) {
+        return
+            Clones.predictDeterministicAddress(
+                paymasterImplementation,
+                salt,
+                address(this)
+            );
     }
 }
