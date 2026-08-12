@@ -138,16 +138,54 @@ npx hardhat run scripts/mintDocumentGasless.ts --network sepolia
 
 ## Environment variables
 
+Deploy/registry/paymaster addresses are network-scoped — suffix the variable with `_SEPOLIA` or `_AMOY` (e.g. `FACTORY_ADDRESS_SEPOLIA`, `FACTORY_ADDRESS_AMOY`). `scripts/lib/network.ts` resolves the suffix from `--network <name>` (hardhat scripts) or the `NETWORK` env var (viem/permissionless scripts). See `.env.example` for the full annotated list.
+
+### Wallets & RPC
+
 | Variable | Description |
 | --- | --- |
-| `PRIVATE_KEY` | Deployer wallet private key |
+| `PRIVATE_KEY` | Deployer/gas-payer wallet — pays for deployments, delegation txs, staking |
+| `PRIVATE_KEY2` | Secondary wallet (optional — testing with a second account) |
+| `OWNER_PRIVATE_KEY` | Platform owner / whitelisted user — signs UserOps, needs no ETH for gasless ops |
 | `SEPOLIA_RPC_URL` | Sepolia RPC endpoint |
+| `AMOY_RPC_URL` | Polygon Amoy RPC endpoint |
 | `PIMLICO_API_KEY` | Pimlico bundler API key |
-| `TDOC_DEPLOYER_ADDRESS` | Deployed TDocDeployer address |
-| `PAYMASTER_IMPLEMENTATION` | PlatformPaymaster implementation address |
-| `FACTORY_ADDRESS` | PlatformAccountFactory address |
-| `PAYMASTER_ADDRESS` | Deployed paymaster clone address |
-| `EIP7702_IMPL_ADDRESS` | EIP7702Implementation address |
+| `NETWORK` | `sepolia` \| `amoy` — target network for viem/permissionless scripts (default: `sepolia`) |
+| `ENTRY_POINT` | EntryPoint v0.8 address (default: `0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108`, same on all supported chains) |
+
+### Deployed addresses (network-suffixed)
+
+| Variable | Description |
+| --- | --- |
+| `EIP7702_IMPL_ADDRESS_<NETWORK>` | Deployed `EIP7702Implementation` address |
+| `PAYMASTER_IMPLEMENTATION_<NETWORK>` | Deployed `PlatformPaymaster` implementation address |
+| `FACTORY_ADDRESS_<NETWORK>` | Deployed `PlatformAccountFactory` address |
+| `PAYMASTER_ADDRESS_<NETWORK>` | Deployed paymaster clone address |
+| `TDOC_DEPLOYER_ADDRESS_<NETWORK>` | TrustVC `TDocDeployer` address (pre-deployed infra) |
+| `TDOC_IMPLEMENTATION_<NETWORK>` | TDoc implementation to clone via `deployRegistry` |
+| `REGISTRY_ADDRESS_<NETWORK>` | Registry deployed via `deployRegistryGasless.ts` |
+| `TITLE_ESCROW_ADDRESS_<NETWORK>` | Title escrow captured via `mintDocumentGasless.ts` |
+
+### Gasless script inputs
+
+| Variable | Description |
+| --- | --- |
+| `TOKEN_NAME` / `TOKEN_SYMBOL` | Name/symbol for the TradeTrust token registry (`deployRegistryGasless.ts`) |
+| `TOKEN_ID` | Document token ID as `uint256` (`mintDocumentGasless.ts`) |
+| `BENEFICIARY_ADDRESS` / `HOLDER_ADDRESS` | Document beneficiary/holder (`mintDocumentGasless.ts`) |
+| `REMARK` | Optional remark bytes/text attached to the document |
+| `NOMINEE_ADDR` / `NEW_HOLDER_ADDR` | Used by the `scripts/trFunctions/*` title-escrow helpers |
+
+### Optional deploy/stake overrides
+
+| Variable | Description |
+| --- | --- |
+| `PLATFORM_ADDRESS` | Paymaster owner EOA for `deployPlatformPaymaster.ts` (default: deployer) |
+| `DAILY_LIMIT_ETH` | Per-user daily gas limit in ETH (default: `0` = unlimited) |
+| `DEPLOY_SALT` | Hex `bytes32` CREATE2 salt (default: random) |
+| `STAKE_AMOUNT_ETH` | ETH locked as EntryPoint stake (default: `0.01`) |
+| `DEPOSIT_AMOUNT_ETH` | ETH deposited into the gas pool (default: `0.05`) |
+| `UNSTAKE_DELAY_SEC` | Stake lock period in seconds (default: `86400` = 1 day) |
 
 ## Tech stack
 

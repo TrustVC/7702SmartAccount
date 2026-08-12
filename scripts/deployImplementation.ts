@@ -17,7 +17,7 @@ import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import hre from "hardhat";
 import * as dotenv from "dotenv";
-import { getNetworkConfig } from "./lib/network";
+import { getNetworkConfig, getFeeOverrides } from "./lib/network";
 dotenv.config();
 
 const DEFAULT_ENTRY_POINT = "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108" as `0x${string}`;
@@ -45,6 +45,7 @@ async function main() {
     abi: artifact.abi,
     bytecode: artifact.bytecode as `0x${string}`,
     args: [entryPoint],
+    ...getFeeOverrides(hre.network.name),
   });
   console.log("  tx:", txHash);
 

@@ -317,8 +317,9 @@ describe("PlatformPaymaster", function () {
       const { paymaster, paymasterAsOther, mockRegistry, other, user } =
         await loadFixture(deployFixture);
 
-      // Authorize the registry
+      // Authorize the registry and whitelist the caller
       await paymaster.write.addRegistry([mockRegistry.address]);
+      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
 
       await paymasterAsOther.write.mintDocument([
         mockRegistry.address,
@@ -356,6 +357,7 @@ describe("PlatformPaymaster", function () {
       const { paymaster, paymasterAsOther, mockRegistry, other, user } =
         await loadFixture(deployFixture);
       await paymaster.write.addRegistry([mockRegistry.address]);
+      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
 
       await paymasterAsOther.write.mintDocument([
         mockRegistry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
@@ -365,6 +367,51 @@ describe("PlatformPaymaster", function () {
       ]);
 
       expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(2n);
+    });
+
+    it("reverts for an unauthorized caller (not whitelisted, not authorizedCaller, not owner)", async function () {
+      const { paymasterAsOther, mockRegistry, paymaster, other, user } =
+        await loadFixture(deployFixture);
+      await paymaster.write.addRegistry([mockRegistry.address]);
+
+      await expect(
+        paymasterAsOther.write.mintDocument([
+          mockRegistry.address,
+          user.account.address,
+          other.account.address,
+          1n,
+          "0x" as `0x${string}`,
+        ]),
+      ).to.be.rejectedWith("caller not authorized");
+    });
+
+    it("allows the owner to mint without being whitelisted", async function () {
+      const { paymaster, mockRegistry, platform, user, other } = await loadFixture(deployFixture);
+      await paymaster.write.addRegistry([mockRegistry.address]);
+
+      // `paymaster` is connected as `platform`, the clone's owner (see deployFixture)
+      await paymaster.write.mintDocument([
+        mockRegistry.address,
+        user.account.address,
+        other.account.address,
+        1n,
+        "0x" as `0x${string}`,
+      ]);
+
+      expect(await paymaster.read.documentsMinted([platform.account.address])).to.equal(1n);
+    });
+
+    it("allows an already-authorizedCaller to mint without whitelist credits", async function () {
+      const { paymaster, paymasterAsOther, mockRegistry, other, user } =
+        await loadFixture(deployFixture);
+      await paymaster.write.addRegistry([mockRegistry.address]);
+      await paymaster.write.addAuthorizedCaller([other.account.address]);
+
+      await paymasterAsOther.write.mintDocument([
+        mockRegistry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
+      ]);
+
+      expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(1n);
     });
   });
 

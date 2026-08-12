@@ -170,6 +170,12 @@ contract PlatformPaymaster is BasePaymaster {
         bytes calldata remark
     ) external returns (address titleEscrow) {
         require(authorizedRegistries[registry], "registry not authorized");
+        require(
+            authorizedCallers[msg.sender] ||
+                userWhitelist[msg.sender] > 0 ||
+                msg.sender == owner(),
+            "caller not authorized"
+        );
 
         titleEscrow = ITradeTrustToken(registry).mint(
             beneficiary,
@@ -291,7 +297,18 @@ contract PlatformPaymaster is BasePaymaster {
             }
 
             if (innerSel == MINT_DOCUMENT_SEL) {
-                // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed
+                if (
+                    !authorizedCallers[sender] &&
+                    userWhitelist[sender] == 0 &&
+                    sender != owner()
+                ) {
+                    emit UserOpRejected(sender, "caller not authorized");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
+                    emit UserOpRejected(sender, "daily limit exceeded");
+                    return ("", _packValidationData(true, 0, 0));
+                }
                 return (
                     abi.encode(sender, maxCost, false),
                     _packValidationData(false, 0, 0)
