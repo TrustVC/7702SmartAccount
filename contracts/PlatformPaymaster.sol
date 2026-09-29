@@ -291,7 +291,12 @@ contract PlatformPaymaster is BasePaymaster {
             }
 
             if (innerSel == MINT_DOCUMENT_SEL) {
-                // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed
+                // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed,
+                // but still subject to the same daily sponsorship budget as Path A.
+                if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
+                    emit UserOpRejected(sender, "daily limit exceeded");
+                    return ("", _packValidationData(true, 0, 0));
+                }
                 return (
                     abi.encode(sender, maxCost, false),
                     _packValidationData(false, 0, 0)

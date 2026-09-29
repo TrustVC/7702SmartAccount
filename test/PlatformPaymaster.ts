@@ -4,7 +4,15 @@ import chaiAsPromised from "chai-as-promised";
 import hre from "hardhat";
 
 chai.use(chaiAsPromised);
-import { getAddress, parseEther, zeroAddress } from "viem";
+import {
+  encodeFunctionData,
+  getAddress,
+  padHex,
+  parseAbi,
+  parseEther,
+  toHex,
+  zeroAddress,
+} from "viem";
 
 describe("PlatformPaymaster", function () {
   async function deployFixture() {
@@ -365,6 +373,85 @@ describe("PlatformPaymaster", function () {
       ]);
 
       expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(2n);
+    });
+
+    it("Test_SubmissionValidity: rejects sponsorship when maxCost exceeds the daily limit", async function () {
+      const { paymaster, mockEntryPoint, user, mockRegistry, publicClient } =
+        await loadFixture(deployFixture);
+      const dailyLimit = parseEther("1");
+      const requestedCost = parseEther("2");
+
+      await paymaster.write.setDailyLimit([dailyLimit]);
+      await paymaster.write.addRegistry([mockRegistry.address]);
+
+      const callData = encodeFunctionData({
+        abi: parseAbi(["function mintDocument(address,address,address,uint256,bytes) external"]),
+        functionName: "mintDocument",
+        args: [mockRegistry.address, user.account.address, user.account.address, 1n, "0x"],
+      });
+      const userOpCallData = encodeFunctionData({
+        abi: parseAbi(["function execute(address,uint256,bytes) external"]),
+        functionName: "execute",
+        args: [paymaster.address, 0n, callData],
+      });
+
+      // validatePaymasterUserOp is onlyEntryPoint-gated; simulate the call
+      // with msg.sender spoofed as the (mock) EntryPoint via eth_call.
+      const result = await publicClient.simulateContract({
+        address: paymaster.address,
+        abi: [
+          {
+            type: "function",
+            name: "validatePaymasterUserOp",
+            stateMutability: "nonpayable",
+            inputs: [
+              {
+                name: "userOp",
+                type: "tuple",
+                components: [
+                  { name: "sender", type: "address" },
+                  { name: "nonce", type: "uint256" },
+                  { name: "initCode", type: "bytes" },
+                  { name: "callData", type: "bytes" },
+                  { name: "accountGasLimits", type: "bytes32" },
+                  { name: "preVerificationGas", type: "uint256" },
+                  { name: "gasFees", type: "bytes32" },
+                  { name: "paymasterAndData", type: "bytes" },
+                  { name: "signature", type: "bytes" },
+                ],
+              },
+              { name: "userOpHash", type: "bytes32" },
+              { name: "maxCost", type: "uint256" },
+            ],
+            outputs: [
+              { name: "context", type: "bytes" },
+              { name: "validationData", type: "uint256" },
+            ],
+          },
+        ],
+        functionName: "validatePaymasterUserOp",
+        account: mockEntryPoint.address,
+        args: [
+          {
+            sender: user.account.address,
+            nonce: 0n,
+            initCode: "0x",
+            callData: userOpCallData,
+            // Packed ERC-4337 gas limits: callGasLimit occupies the low 128 bits.
+            accountGasLimits: padHex(toHex(1_000_000n), { size: 32 }),
+            preVerificationGas: 0n,
+            gasFees: `0x${"00".repeat(32)}`,
+            paymasterAndData: "0x",
+            signature: "0x",
+          },
+          `0x${"00".repeat(32)}`,
+          requestedCost,
+        ],
+      });
+
+      // validationData must signal failure (SIG_VALIDATION_FAILED = 1) — the
+      // mintDocument path must no longer bypass the daily sponsorship budget.
+      expect(result.result[1]).to.equal(1n);
     });
   });
 
