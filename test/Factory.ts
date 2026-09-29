@@ -245,7 +245,7 @@ describe("PlatformAccountFactory", function () {
           0n,
           other.account.address,
         ]),
-      ).to.be.rejectedWith("Already initialized");
+      ).to.be.rejectedWith("InvalidInitialization");
     });
 
     it("same salt reverts on second deploy", async function () {

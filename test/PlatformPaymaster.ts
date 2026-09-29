@@ -81,27 +81,40 @@ describe("PlatformPaymaster", function () {
       const { paymaster, other } = await loadFixture(deployFixture);
       await expect(
         paymaster.write.initialize([other.account.address, 0n, other.account.address]),
-      ).to.be.rejectedWith("Already initialized");
+      ).to.be.rejectedWith("InvalidInitialization");
     });
 
     it("blocks initialization on the implementation itself", async function () {
       const { impl, other } = await loadFixture(deployFixture);
       await expect(
         impl.write.initialize([other.account.address, 0n, other.account.address]),
-      ).to.be.rejectedWith("Already initialized");
+      ).to.be.rejectedWith("InvalidInitialization");
+    });
+
+    it("cannot be re-initialized after renounceOwnership", async function () {
+      const { paymaster, other, mockTdocDeployer } = await loadFixture(deployFixture);
+      // Ownable2Step: renounceOwnership is one-step on OZ Ownable via Ownable2Step?
+      // BasePaymaster is Ownable2Step — renounceOwnership may still set owner to 0.
+      await paymaster.write.renounceOwnership();
+      expect(await paymaster.read.owner()).to.equal(zeroAddress);
+
+      await expect(
+        paymaster.write.initialize([
+          other.account.address,
+          parseEther("1"),
+          mockTdocDeployer.address,
+        ]),
+      ).to.be.rejectedWith("InvalidInitialization");
     });
 
     it("reverts if owner is zero", async function () {
       const { impl, mockTdocDeployer, mockEntryPoint } = await loadFixture(deployFixture);
       // Deploy a fresh impl and clone without the factory to test directly
-      const freshImpl = await hre.viem.deployContract("PlatformPaymaster", [
-        mockEntryPoint.address,
-      ]);
       // Call initialize directly via a raw clone — easier to just test via factory with zero address
       // The factory validates non-zero owner via initialize's require
       const factory2 = await hre.viem.deployContract("PlatformAccountFactory", [
         mockTdocDeployer.address,
-        freshImpl.address,
+        (await hre.viem.deployContract("PlatformPaymaster", [mockEntryPoint.address])).address,
       ]);
       await expect(
         factory2.write.deployPlatformPaymaster([

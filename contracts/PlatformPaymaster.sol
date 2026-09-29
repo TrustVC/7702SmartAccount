@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@account-abstraction/contracts/core/BasePaymaster.sol";
 import "@account-abstraction/contracts/core/Helpers.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 interface ITDocDeployer {
     function deploy(
@@ -38,7 +39,7 @@ interface IAccessControl {
  * so non-beneficiary/holder callers are rejected at execution time.
  * If the call reverts, _postOp skips the spend update.
  */
-contract PlatformPaymaster is BasePaymaster {
+contract PlatformPaymaster is BasePaymaster, Initializable {
     bytes4 private constant EXECUTE_SEL =
         bytes4(keccak256("execute(address,uint256,bytes)"));
     bytes4 private constant DEPLOY_REGISTRY_SEL =
@@ -89,18 +90,20 @@ contract PlatformPaymaster is BasePaymaster {
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    // Deployed once as the shared implementation; BasePaymaster sets owner = msg.sender.
-    // That non-zero owner prevents initialize() from running on the implementation itself.
-    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {}
+    // Shared implementation: lock initialize() on this contract. Clones keep a
+    // fresh Initializable storage slot and are initialized once by the factory.
+    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {
+        _disableInitializers();
+    }
 
     // Called by the factory immediately after cloneDeterministic().
-    // A fresh clone has all-zero storage, so owner() == address(0) exactly once.
+    // Uses Initializable — not owner() == address(0) — so renounceOwnership
+    // cannot reopen initialization and allow takeover of paymaster config.
     function initialize(
         address _owner,
         uint256 _dailyLimit,
         address _tdocDeployer
-    ) external {
-        require(owner() == address(0), "Already initialized");
+    ) external initializer {
         require(_owner != address(0), "Zero owner");
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
