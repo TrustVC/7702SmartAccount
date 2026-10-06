@@ -182,9 +182,16 @@ describe("PlatformAccountFactory", function () {
       );
     });
 
+    it("records attachedPaymaster for the platform", async function () {
+      const { factory, platform } = await loadFixture(deployFixture);
+      const cloneAddr = await deployClone(factory, platform);
+      expect(
+        await factory.read.attachedPaymaster([platform.account.address]),
+      ).to.equal(getAddress(cloneAddr));
+    });
+
     it("clone owner is platformAddress", async function () {
-      const { factory, platform, mockTdocDeployer } =
-        await loadFixture(deployFixture);
+      const { factory, platform } = await loadFixture(deployFixture);
       const cloneAddr = await deployClone(factory, platform);
       const clone = await hre.viem.getContractAt(
         "PlatformPaymaster",
@@ -227,7 +234,10 @@ describe("PlatformAccountFactory", function () {
     it("computePaymasterAddress predicts the deployed address", async function () {
       const { factory, platform } = await loadFixture(deployFixture);
       const salt = `0x${"cc".repeat(32)}` as `0x${string}`;
-      const predicted = await factory.read.computePaymasterAddress([salt]);
+      const predicted = await factory.read.computePaymasterAddress([
+        platform.account.address,
+        salt,
+      ]);
       const cloneAddr = await deployClone(factory, platform, salt);
       expect(cloneAddr.toLowerCase()).to.equal(predicted.toLowerCase());
     });
@@ -248,21 +258,43 @@ describe("PlatformAccountFactory", function () {
       ).to.be.rejectedWith("InvalidInitialization");
     });
 
-    it("same salt reverts on second deploy", async function () {
+    it("reverts for non-owner", async function () {
+      const { factory, platform, other } = await loadFixture(deployFixture);
+      const factoryAsOther = await hre.viem.getContractAt(
+        "PlatformAccountFactory",
+        factory.address,
+        { client: { wallet: other } },
+      );
+      await expect(
+        factoryAsOther.write.deployPlatformPaymaster([
+          platform.account.address,
+          0n,
+          `0x${"dd".repeat(32)}` as `0x${string}`,
+        ]),
+      ).to.be.rejectedWith("OwnableUnauthorizedAccount");
+    });
+
+    it("reverts for zero platform address", async function () {
+      const { factory } = await loadFixture(deployFixture);
+      await expect(
+        factory.write.deployPlatformPaymaster([
+          zeroAddress,
+          0n,
+          `0x${"ee".repeat(32)}` as `0x${string}`,
+        ]),
+      ).to.be.rejectedWith("Zero address");
+    });
+
+    it("reverts when platform is already onboarded", async function () {
       const { factory, platform } = await loadFixture(deployFixture);
-      const salt = `0x${"dd".repeat(32)}` as `0x${string}`;
-      await factory.write.deployPlatformPaymaster([
-        platform.account.address,
-        0n,
-        salt,
-      ]);
+      await deployClone(factory, platform, `0x${"dd".repeat(32)}`);
       await expect(
         factory.write.deployPlatformPaymaster([
           platform.account.address,
           0n,
-          salt,
+          `0x${"ee".repeat(32)}` as `0x${string}`,
         ]),
-      ).to.be.rejected;
+      ).to.be.rejectedWith("Already onboarded");
     });
   });
 });

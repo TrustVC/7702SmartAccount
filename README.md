@@ -15,7 +15,7 @@ This package provides three contracts:
 ## How it works
 
 1. **Delegate** — An EOA signs an EIP-7702 authorization pointing to `EIP7702Implementation`. The EOA's code becomes `0xef0100 || impl_address`, giving it full smart-account capabilities while keeping its original private key.
-2. **Deploy paymaster** — A platform calls `PlatformAccountFactory.deployPlatformPaymaster()`. A minimal-proxy clone (~55k gas vs ~1.5M for a full deploy) is initialized with the platform's owner address, daily ETH limit, and TDoc deployer.
+2. **Deploy paymaster** — The factory owner calls `PlatformAccountFactory.deployPlatformPaymaster()`. A minimal-proxy clone (~55k gas vs ~1.5M for a full deploy) is initialized with the platform's owner address, daily ETH limit, and TDoc deployer.
 3. **Gasless ops** — Users submit `UserOperation`s through a bundler (Pimlico). The paymaster validates and sponsors:
    - **Path A** — Calls to authorized registries or title escrows (beneficiary/holder/owner only, daily limit enforced)
    - **Path B** — `deployRegistry` (credit-gated) and `mintDocument` (MINTER\_ROLE gated) on the paymaster itself
@@ -62,8 +62,9 @@ Per-platform ERC-4337 paymaster cloned from a shared implementation.
 
 Deploys `PlatformPaymaster` clones deterministically.
 
-- `deployPlatformPaymaster(platformAddress, dailyLimit, salt)` — clones the implementation and calls `initialize`
-- `computePaymasterAddress(salt)` — predict the clone address before deployment
+- `deployPlatformPaymaster(platformAddress, dailyLimit, salt)` — owner-only; clones the implementation, binds `attachedPaymaster`, and calls `initialize` (CREATE2 salt is mixed with `platformAddress`)
+- `computePaymasterAddress(platformAddress, salt)` — predict the clone address before deployment
+- `attachedPaymaster(platform)` — registered paymaster for an onboarded platform
 - `updateTdocDeployer(addr)` — update TDoc deployer (`onlyOwner`)
 - `updatePaymasterImplementation(addr)` — upgrade the implementation for future clones (`onlyOwner`)
 

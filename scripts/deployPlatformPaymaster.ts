@@ -7,7 +7,7 @@
 //   npx hardhat run scripts/deployPlatformPaymaster.ts --network amoy
 //
 // Required .env:
-//   PRIVATE_KEY                    — deployer wallet (pays gas)
+//   PRIVATE_KEY                    — factory owner wallet (pays gas; onlyOwner)
 //   SEPOLIA_RPC_URL / AMOY_RPC_URL — RPC for the target network
 //   FACTORY_ADDRESS_<NETWORK>      — deployed PlatformAccountFactory
 //
@@ -33,6 +33,7 @@ dotenv.config();
 
 const factoryAbi = parseAbi([
   "function deployPlatformPaymaster(address platformAddress, uint256 dailyLimit, bytes32 salt) external returns (address paymaster)",
+  "function computePaymasterAddress(address platformAddress, bytes32 salt) external view returns (address)",
   "event PlatformOnboarded(address indexed platformAddress, address indexed paymaster)",
 ]);
 

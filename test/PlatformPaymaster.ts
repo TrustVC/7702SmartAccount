@@ -122,7 +122,7 @@ describe("PlatformPaymaster", function () {
           0n,
           `0x${"ff".repeat(32)}` as `0x${string}`,
         ]),
-      ).to.be.rejectedWith("Zero owner");
+      ).to.be.rejectedWith("Zero address");
     });
   });
 

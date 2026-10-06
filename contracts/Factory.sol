@@ -25,13 +25,6 @@ contract PlatformAccountFactory is Ownable {
         paymasterImplementation = _paymasterImplementation;
     }
 
-    function setAttachedPaymaster(
-        address platformAddress
-    ) external view returns (address) {
-        address paymaster = attachedPaymaster[platformAddress];
-        return paymaster;
-    }
-
     function updateTdocDeployer(address _tdocDeployer) external onlyOwner {
         require(_tdocDeployer != address(0), "Zero address");
         tdocDeployer = _tdocDeployer;
@@ -44,29 +37,50 @@ contract PlatformAccountFactory is Ownable {
         emit ImplementationUpdated(_impl);
     }
 
+    /// @notice Owner-only onboarding. Salt is mixed with `platformAddress` so a
+    /// predicted address cannot be front-run for a different platform.
     function deployPlatformPaymaster(
         address platformAddress,
         uint256 dailyLimit,
         bytes32 salt
-    ) external returns (address paymaster) {
-        paymaster = Clones.cloneDeterministic(paymasterImplementation, salt);
+    ) external onlyOwner returns (address paymaster) {
+        require(platformAddress != address(0), "Zero address");
+        require(
+            attachedPaymaster[platformAddress] == address(0),
+            "Already onboarded"
+        );
+
+        bytes32 deploymentSalt = _deploymentSalt(platformAddress, salt);
+        paymaster = Clones.cloneDeterministic(
+            paymasterImplementation,
+            deploymentSalt
+        );
         PlatformPaymaster(payable(paymaster)).initialize(
             platformAddress,
             dailyLimit,
             tdocDeployer
         );
+        attachedPaymaster[platformAddress] = paymaster;
         emit PlatformOnboarded(platformAddress, paymaster);
     }
 
-    // Address is determined solely by implementation + salt (not by constructor args).
+    /// @notice Predict clone address for a platform + salt pair.
     function computePaymasterAddress(
+        address platformAddress,
         bytes32 salt
     ) external view returns (address) {
         return
             Clones.predictDeterministicAddress(
                 paymasterImplementation,
-                salt,
+                _deploymentSalt(platformAddress, salt),
                 address(this)
             );
+    }
+
+    function _deploymentSalt(
+        address platformAddress,
+        bytes32 salt
+    ) private pure returns (bytes32) {
+        return keccak256(abi.encode(platformAddress, salt));
     }
 }
