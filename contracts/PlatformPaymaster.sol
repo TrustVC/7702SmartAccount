@@ -3,7 +3,6 @@ pragma solidity ^0.8.28;
 
 import "@account-abstraction/contracts/core/BasePaymaster.sol";
 import "@account-abstraction/contracts/core/Helpers.sol";
-import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 interface ITDocDeployer {
     function deploy(
@@ -39,7 +38,7 @@ interface IAccessControl {
  * so non-beneficiary/holder callers are rejected at execution time.
  * If the call reverts, _postOp skips the spend update.
  */
-contract PlatformPaymaster is BasePaymaster, Initializable {
+contract PlatformPaymaster is BasePaymaster {
     bytes4 private constant EXECUTE_SEL =
         bytes4(keccak256("execute(address,uint256,bytes)"));
     bytes4 private constant DEPLOY_REGISTRY_SEL =
@@ -71,6 +70,12 @@ contract PlatformPaymaster is BasePaymaster, Initializable {
     mapping(address => uint256) public lastReset;
     uint256 public dailyLimit;
 
+    /// @dev Appended one-time init flag (not Ownable owner). Locks the shared
+    /// implementation in the constructor and each clone after `initialize`, so
+    /// renounceOwnership cannot reopen initialization. Placed after existing
+    /// state to avoid shifting prior storage slots; no OZ Initializable (ABI).
+    bool private _initialized;
+
     event RegistryAdded(address indexed registry);
     event RegistryRemoved(address indexed registry);
     event TitleEscrowLinked(
@@ -90,21 +95,22 @@ contract PlatformPaymaster is BasePaymaster, Initializable {
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    // Shared implementation: lock initialize() on this contract. Clones keep a
-    // fresh Initializable storage slot and are initialized once by the factory.
+    // Shared implementation: mark initialized so clones alone can run initialize().
     constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {
-        _disableInitializers();
+        _initialized = true;
     }
 
     // Called by the factory immediately after cloneDeterministic().
-    // Uses Initializable — not owner() == address(0) — so renounceOwnership
+    // Uses a dedicated flag — not owner() == address(0) — so renounceOwnership
     // cannot reopen initialization and allow takeover of paymaster config.
     function initialize(
         address _owner,
         uint256 _dailyLimit,
         address _tdocDeployer
-    ) external initializer {
+    ) external {
+        require(!_initialized, "Already initialized");
         require(_owner != address(0), "Zero owner");
+        _initialized = true;
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
         tdocDeployer = ITDocDeployer(_tdocDeployer);

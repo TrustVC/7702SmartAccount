@@ -62,9 +62,8 @@ Per-platform ERC-4337 paymaster cloned from a shared implementation.
 
 Deploys `PlatformPaymaster` clones deterministically.
 
-- `deployPlatformPaymaster(platformAddress, dailyLimit, salt)` — owner-only; clones the implementation, binds `attachedPaymaster`, and calls `initialize` (CREATE2 salt is mixed with `platformAddress`)
-- `computePaymasterAddress(platformAddress, salt)` — predict the clone address before deployment
-- `attachedPaymaster(platform)` — registered paymaster for an onboarded platform
+- `deployPlatformPaymaster(platformAddress, dailyLimit, salt)` — owner-only; clones the implementation and calls `initialize` (one paymaster per platform)
+- `computePaymasterAddress(salt)` — predict the clone address before deployment
 - `updateTdocDeployer(addr)` — update TDoc deployer (`onlyOwner`)
 - `updatePaymasterImplementation(addr)` — upgrade the implementation for future clones (`onlyOwner`)
 

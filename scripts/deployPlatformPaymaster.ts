@@ -33,7 +33,7 @@ dotenv.config();
 
 const factoryAbi = parseAbi([
   "function deployPlatformPaymaster(address platformAddress, uint256 dailyLimit, bytes32 salt) external returns (address paymaster)",
-  "function computePaymasterAddress(address platformAddress, bytes32 salt) external view returns (address)",
+  "function computePaymasterAddress(bytes32 salt) external view returns (address)",
   "event PlatformOnboarded(address indexed platformAddress, address indexed paymaster)",
 ]);
 

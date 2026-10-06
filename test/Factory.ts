@@ -182,12 +182,13 @@ describe("PlatformAccountFactory", function () {
       );
     });
 
-    it("records attachedPaymaster for the platform", async function () {
+    it("binds platform onboarding (duplicate deploy reverts)", async function () {
       const { factory, platform } = await loadFixture(deployFixture);
       const cloneAddr = await deployClone(factory, platform);
-      expect(
-        await factory.read.attachedPaymaster([platform.account.address]),
-      ).to.equal(getAddress(cloneAddr));
+      const events = await factory.getEvents.PlatformOnboarded();
+      expect(events[events.length - 1].args.paymaster).to.equal(
+        getAddress(cloneAddr),
+      );
     });
 
     it("clone owner is platformAddress", async function () {
@@ -234,10 +235,7 @@ describe("PlatformAccountFactory", function () {
     it("computePaymasterAddress predicts the deployed address", async function () {
       const { factory, platform } = await loadFixture(deployFixture);
       const salt = `0x${"cc".repeat(32)}` as `0x${string}`;
-      const predicted = await factory.read.computePaymasterAddress([
-        platform.account.address,
-        salt,
-      ]);
+      const predicted = await factory.read.computePaymasterAddress([salt]);
       const cloneAddr = await deployClone(factory, platform, salt);
       expect(cloneAddr.toLowerCase()).to.equal(predicted.toLowerCase());
     });
@@ -255,7 +253,7 @@ describe("PlatformAccountFactory", function () {
           0n,
           other.account.address,
         ]),
-      ).to.be.rejectedWith("InvalidInitialization");
+      ).to.be.rejectedWith("Already initialized");
     });
 
     it("reverts for non-owner", async function () {

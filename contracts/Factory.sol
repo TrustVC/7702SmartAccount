@@ -5,10 +5,17 @@ import {PlatformPaymaster} from "./PlatformPaymaster.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
+/**
+ * @title PlatformAccountFactory
+ * @notice Deploys PlatformPaymaster clones. Public ABI matches `dev`
+ * (`deployPlatformPaymaster`, `computePaymasterAddress(bytes32)`, …).
+ * Onboarding is owner-gated; platform→paymaster binding is tracked privately.
+ */
 contract PlatformAccountFactory is Ownable {
     address public tdocDeployer;
     address public paymasterImplementation;
-    mapping(address => address) public attachedPaymaster;
+    /// @dev Not exposed in ABI (private). Prevents duplicate platform onboarding.
+    mapping(address => address) private _attachedPaymaster;
 
     event PlatformOnboarded(
         address indexed platformAddress,
@@ -37,8 +44,8 @@ contract PlatformAccountFactory is Ownable {
         emit ImplementationUpdated(_impl);
     }
 
-    /// @notice Owner-only onboarding. Salt is mixed with `platformAddress` so a
-    /// predicted address cannot be front-run for a different platform.
+    /// @notice Owner-only onboarding. CREATE2 salt is unchanged so
+    /// `computePaymasterAddress(bytes32)` stays ABI-compatible with `dev`.
     function deployPlatformPaymaster(
         address platformAddress,
         uint256 dailyLimit,
@@ -46,41 +53,29 @@ contract PlatformAccountFactory is Ownable {
     ) external onlyOwner returns (address paymaster) {
         require(platformAddress != address(0), "Zero address");
         require(
-            attachedPaymaster[platformAddress] == address(0),
+            _attachedPaymaster[platformAddress] == address(0),
             "Already onboarded"
         );
 
-        bytes32 deploymentSalt = _deploymentSalt(platformAddress, salt);
-        paymaster = Clones.cloneDeterministic(
-            paymasterImplementation,
-            deploymentSalt
-        );
+        paymaster = Clones.cloneDeterministic(paymasterImplementation, salt);
         PlatformPaymaster(payable(paymaster)).initialize(
             platformAddress,
             dailyLimit,
             tdocDeployer
         );
-        attachedPaymaster[platformAddress] = paymaster;
+        _attachedPaymaster[platformAddress] = paymaster;
         emit PlatformOnboarded(platformAddress, paymaster);
     }
 
-    /// @notice Predict clone address for a platform + salt pair.
+    // Address is determined solely by implementation + salt (not by constructor args).
     function computePaymasterAddress(
-        address platformAddress,
         bytes32 salt
     ) external view returns (address) {
         return
             Clones.predictDeterministicAddress(
                 paymasterImplementation,
-                _deploymentSalt(platformAddress, salt),
+                salt,
                 address(this)
             );
-    }
-
-    function _deploymentSalt(
-        address platformAddress,
-        bytes32 salt
-    ) private pure returns (bytes32) {
-        return keccak256(abi.encode(platformAddress, salt));
     }
 }

@@ -127,30 +127,6 @@ export const platformAccountFactoryAbi = [
   {
     "inputs": [
       {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "name": "attachedPaymaster",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "platformAddress",
-        "type": "address"
-      },
-      {
         "internalType": "bytes32",
         "name": "salt",
         "type": "bytes32"

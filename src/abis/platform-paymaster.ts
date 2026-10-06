@@ -13,16 +13,6 @@ export const platformPaymasterAbi = [
     "type": "constructor"
   },
   {
-    "inputs": [],
-    "name": "InvalidInitialization",
-    "type": "error"
-  },
-  {
-    "inputs": [],
-    "name": "NotInitializing",
-    "type": "error"
-  },
-  {
     "inputs": [
       {
         "internalType": "address",
@@ -74,19 +64,6 @@ export const platformPaymasterAbi = [
       }
     ],
     "name": "DailyLimitUpdated",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": false,
-        "internalType": "uint64",
-        "name": "version",
-        "type": "uint64"
-      }
-    ],
-    "name": "Initialized",
     "type": "event"
   },
   {

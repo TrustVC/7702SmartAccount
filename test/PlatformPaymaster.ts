@@ -81,14 +81,14 @@ describe("PlatformPaymaster", function () {
       const { paymaster, other } = await loadFixture(deployFixture);
       await expect(
         paymaster.write.initialize([other.account.address, 0n, other.account.address]),
-      ).to.be.rejectedWith("InvalidInitialization");
+      ).to.be.rejectedWith("Already initialized");
     });
 
     it("blocks initialization on the implementation itself", async function () {
       const { impl, other } = await loadFixture(deployFixture);
       await expect(
         impl.write.initialize([other.account.address, 0n, other.account.address]),
-      ).to.be.rejectedWith("InvalidInitialization");
+      ).to.be.rejectedWith("Already initialized");
     });
 
     it("cannot be re-initialized after renounceOwnership", async function () {
@@ -104,7 +104,7 @@ describe("PlatformPaymaster", function () {
           parseEther("1"),
           mockTdocDeployer.address,
         ]),
-      ).to.be.rejectedWith("InvalidInitialization");
+      ).to.be.rejectedWith("Already initialized");
     });
 
     it("reverts if owner is zero", async function () {
