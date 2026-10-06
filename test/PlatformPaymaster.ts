@@ -1,18 +1,54 @@
-import { loadFixture } from "@nomicfoundation/hardhat-toolbox-viem/network-helpers";
+import {
+  loadFixture,
+  time,
+} from "@nomicfoundation/hardhat-toolbox-viem/network-helpers";
 import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
 import hre from "hardhat";
 
 chai.use(chaiAsPromised);
 import {
+  encodeAbiParameters,
   encodeFunctionData,
   getAddress,
   padHex,
   parseAbi,
+  parseAbiParameters,
   parseEther,
   toHex,
   zeroAddress,
 } from "viem";
+
+const validatePaymasterUserOpAbi = [
+  {
+    type: "function",
+    name: "validatePaymasterUserOp",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "userOp",
+        type: "tuple",
+        components: [
+          { name: "sender", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "initCode", type: "bytes" },
+          { name: "callData", type: "bytes" },
+          { name: "accountGasLimits", type: "bytes32" },
+          { name: "preVerificationGas", type: "uint256" },
+          { name: "gasFees", type: "bytes32" },
+          { name: "paymasterAndData", type: "bytes" },
+          { name: "signature", type: "bytes" },
+        ],
+      },
+      { name: "userOpHash", type: "bytes32" },
+      { name: "maxCost", type: "uint256" },
+    ],
+    outputs: [
+      { name: "context", type: "bytes" },
+      { name: "validationData", type: "uint256" },
+    ],
+  },
+] as const;
 
 describe("PlatformPaymaster", function () {
   async function deployFixture() {
@@ -412,36 +448,7 @@ describe("PlatformPaymaster", function () {
       // with msg.sender spoofed as the (mock) EntryPoint via eth_call.
       const result = await publicClient.simulateContract({
         address: paymaster.address,
-        abi: [
-          {
-            type: "function",
-            name: "validatePaymasterUserOp",
-            stateMutability: "nonpayable",
-            inputs: [
-              {
-                name: "userOp",
-                type: "tuple",
-                components: [
-                  { name: "sender", type: "address" },
-                  { name: "nonce", type: "uint256" },
-                  { name: "initCode", type: "bytes" },
-                  { name: "callData", type: "bytes" },
-                  { name: "accountGasLimits", type: "bytes32" },
-                  { name: "preVerificationGas", type: "uint256" },
-                  { name: "gasFees", type: "bytes32" },
-                  { name: "paymasterAndData", type: "bytes" },
-                  { name: "signature", type: "bytes" },
-                ],
-              },
-              { name: "userOpHash", type: "bytes32" },
-              { name: "maxCost", type: "uint256" },
-            ],
-            outputs: [
-              { name: "context", type: "bytes" },
-              { name: "validationData", type: "uint256" },
-            ],
-          },
-        ],
+        abi: validatePaymasterUserOpAbi,
         functionName: "validatePaymasterUserOp",
         account: mockEntryPoint.address,
         args: [
@@ -465,6 +472,95 @@ describe("PlatformPaymaster", function () {
       // validationData must signal failure (SIG_VALIDATION_FAILED = 1) — the
       // mintDocument path must no longer bypass the daily sponsorship budget.
       expect(result.result[1]).to.equal(1n);
+    });
+
+    it("treats expired daily window as zero spend during validation", async function () {
+      const { paymaster, mockEntryPoint, user, mockRegistry, publicClient } =
+        await loadFixture(deployFixture);
+      const dailyLimit = parseEther("1");
+      const priorSpend = parseEther("1");
+      const nextCost = parseEther("0.5");
+
+      await paymaster.write.setDailyLimit([dailyLimit]);
+      await paymaster.write.addRegistry([mockRegistry.address]);
+
+      // Seed prior-day spend via EntryPoint.postOp (records lastReset + dailySpend).
+      await hre.network.provider.request({
+        method: "hardhat_impersonateAccount",
+        params: [mockEntryPoint.address],
+      });
+      await hre.network.provider.send("hardhat_setBalance", [
+        mockEntryPoint.address,
+        toHex(parseEther("1")),
+      ]);
+      const entryPointWallet = await hre.viem.getWalletClient(mockEntryPoint.address);
+      const context = encodeAbiParameters(parseAbiParameters("address, uint256, bool"), [
+        user.account.address,
+        priorSpend,
+        false,
+      ]);
+      await entryPointWallet.writeContract({
+        address: paymaster.address,
+        abi: parseAbi([
+          "function postOp(uint8 mode, bytes context, uint256 actualGasCost, uint256 actualUserOpFeePerGas) external",
+        ]),
+        functionName: "postOp",
+        args: [0, context, priorSpend, 0n],
+        chain: entryPointWallet.chain,
+        account: entryPointWallet.account!,
+      });
+      await hre.network.provider.request({
+        method: "hardhat_stopImpersonatingAccount",
+        params: [mockEntryPoint.address],
+      });
+
+      expect(await paymaster.read.dailySpend([user.account.address])).to.equal(priorSpend);
+
+      const callData = encodeFunctionData({
+        abi: parseAbi(["function mintDocument(address,address,address,uint256,bytes) external"]),
+        functionName: "mintDocument",
+        args: [mockRegistry.address, user.account.address, user.account.address, 1n, "0x"],
+      });
+      const userOpCallData = encodeFunctionData({
+        abi: parseAbi(["function execute(address,uint256,bytes) external"]),
+        functionName: "execute",
+        args: [paymaster.address, 0n, callData],
+      });
+      const packedUserOp = {
+        sender: user.account.address,
+        nonce: 0n,
+        initCode: "0x" as const,
+        callData: userOpCallData,
+        accountGasLimits: padHex(toHex(1_000_000n), { size: 32 }),
+        preVerificationGas: 0n,
+        gasFees: `0x${"00".repeat(32)}` as `0x${string}`,
+        paymasterAndData: "0x" as const,
+        signature: "0x" as const,
+      };
+
+      // Still within the window: prior spend + nextCost exceeds dailyLimit.
+      const blocked = await publicClient.simulateContract({
+        address: paymaster.address,
+        abi: validatePaymasterUserOpAbi,
+        functionName: "validatePaymasterUserOp",
+        account: mockEntryPoint.address,
+        args: [packedUserOp, `0x${"00".repeat(32)}`, nextCost],
+      });
+      expect(blocked.result[1]).to.equal(1n);
+
+      await time.increase(86_400n + 1n);
+
+      // After expiry, validation must treat spend as zero (storage still holds priorSpend
+      // until _postOp opens the new window).
+      expect(await paymaster.read.dailySpend([user.account.address])).to.equal(priorSpend);
+      const allowed = await publicClient.simulateContract({
+        address: paymaster.address,
+        abi: validatePaymasterUserOpAbi,
+        functionName: "validatePaymasterUserOp",
+        account: mockEntryPoint.address,
+        args: [packedUserOp, `0x${"00".repeat(32)}`, nextCost],
+      });
+      expect(allowed.result[1]).to.equal(0n);
     });
   });
 

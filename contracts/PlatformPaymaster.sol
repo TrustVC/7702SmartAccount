@@ -267,7 +267,7 @@ contract PlatformPaymaster is BasePaymaster {
                 emit UserOpRejected(sender, "caller not authorized");
                 return ("", _packValidationData(true, 0, 0));
             }
-            if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
+            if (dailyLimit > 0 && _effectiveDailySpend(sender) + maxCost > dailyLimit) {
                 emit UserOpRejected(sender, "daily limit exceeded");
                 return ("", _packValidationData(true, 0, 0));
             }
@@ -302,7 +302,7 @@ contract PlatformPaymaster is BasePaymaster {
             if (innerSel == MINT_DOCUMENT_SEL) {
                 // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed,
                 // but still subject to the same daily sponsorship budget as Path A.
-                if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
+                if (dailyLimit > 0 && _effectiveDailySpend(sender) + maxCost > dailyLimit) {
                     emit UserOpRejected(sender, "daily limit exceeded");
                     return ("", _packValidationData(true, 0, 0));
                 }
@@ -343,6 +343,16 @@ contract PlatformPaymaster is BasePaymaster {
         }
 
         emit UserOpSponsored(sender, actualGasCost);
+    }
+
+    /// @dev Validation uses zero spend after the window expires so a full prior
+    /// day cannot permanently block sponsorship. `_postOp` still opens the new
+    /// window and records spend; this helper must not mutate state.
+    function _effectiveDailySpend(address sender) private view returns (uint256) {
+        if (block.timestamp > lastReset[sender] + 1 days) {
+            return 0;
+        }
+        return dailySpend[sender];
     }
 
     // v0.8 contracts on Etherspot EntryPoint — skip interface mismatch check
