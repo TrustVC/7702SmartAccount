@@ -7,7 +7,7 @@
 //   npx hardhat run scripts/deployPlatformPaymaster.ts --network amoy
 //
 // Required .env:
-//   PRIVATE_KEY                    — deployer wallet (pays gas)
+//   PRIVATE_KEY                    — factory owner wallet (pays gas; onlyOwner)
 //   SEPOLIA_RPC_URL / AMOY_RPC_URL — RPC for the target network
 //   FACTORY_ADDRESS_<NETWORK>      — deployed PlatformAccountFactory
 //
@@ -28,11 +28,12 @@ import { randomBytes } from "crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import hre from "hardhat";
 import * as dotenv from "dotenv";
-import { getNetworkConfig, getEnv, getFeeOverrides } from "./lib/network";
+import { getNetworkConfig, getEnv } from "./lib/network";
 dotenv.config();
 
 const factoryAbi = parseAbi([
   "function deployPlatformPaymaster(address platformAddress, uint256 dailyLimit, bytes32 salt) external returns (address paymaster)",
+  "function computePaymasterAddress(bytes32 salt) external view returns (address)",
   "event PlatformOnboarded(address indexed platformAddress, address indexed paymaster)",
 ]);
 
@@ -64,7 +65,6 @@ async function main() {
     abi: factoryAbi,
     functionName: "deployPlatformPaymaster",
     args: [platformAddress, dailyLimit, salt],
-    ...getFeeOverrides(hre.network.name),
   });
   console.log("  tx:", txHash);
 

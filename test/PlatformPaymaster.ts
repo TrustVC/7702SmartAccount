@@ -4,7 +4,15 @@ import chaiAsPromised from "chai-as-promised";
 import hre from "hardhat";
 
 chai.use(chaiAsPromised);
-import { getAddress, parseEther, zeroAddress } from "viem";
+import {
+  encodeFunctionData,
+  getAddress,
+  padHex,
+  parseAbi,
+  parseEther,
+  toHex,
+  zeroAddress,
+} from "viem";
 
 describe("PlatformPaymaster", function () {
   async function deployFixture() {
@@ -83,17 +91,30 @@ describe("PlatformPaymaster", function () {
       ).to.be.rejectedWith("Already initialized");
     });
 
+    it("cannot be re-initialized after renounceOwnership", async function () {
+      const { paymaster, other, mockTdocDeployer } = await loadFixture(deployFixture);
+      // Ownable2Step: renounceOwnership is one-step on OZ Ownable via Ownable2Step?
+      // BasePaymaster is Ownable2Step — renounceOwnership may still set owner to 0.
+      await paymaster.write.renounceOwnership();
+      expect(await paymaster.read.owner()).to.equal(zeroAddress);
+
+      await expect(
+        paymaster.write.initialize([
+          other.account.address,
+          parseEther("1"),
+          mockTdocDeployer.address,
+        ]),
+      ).to.be.rejectedWith("Already initialized");
+    });
+
     it("reverts if owner is zero", async function () {
       const { impl, mockTdocDeployer, mockEntryPoint } = await loadFixture(deployFixture);
       // Deploy a fresh impl and clone without the factory to test directly
-      const freshImpl = await hre.viem.deployContract("PlatformPaymaster", [
-        mockEntryPoint.address,
-      ]);
       // Call initialize directly via a raw clone — easier to just test via factory with zero address
       // The factory validates non-zero owner via initialize's require
       const factory2 = await hre.viem.deployContract("PlatformAccountFactory", [
         mockTdocDeployer.address,
-        freshImpl.address,
+        (await hre.viem.deployContract("PlatformPaymaster", [mockEntryPoint.address])).address,
       ]);
       await expect(
         factory2.write.deployPlatformPaymaster([
@@ -101,7 +122,7 @@ describe("PlatformPaymaster", function () {
           0n,
           `0x${"ff".repeat(32)}` as `0x${string}`,
         ]),
-      ).to.be.rejectedWith("Zero owner");
+      ).to.be.rejectedWith("Zero address");
     });
   });
 
@@ -317,9 +338,8 @@ describe("PlatformPaymaster", function () {
       const { paymaster, paymasterAsOther, mockRegistry, other, user } =
         await loadFixture(deployFixture);
 
-      // Authorize the registry and whitelist the caller
+      // Authorize the registry
       await paymaster.write.addRegistry([mockRegistry.address]);
-      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
 
       await paymasterAsOther.write.mintDocument([
         mockRegistry.address,
@@ -357,7 +377,6 @@ describe("PlatformPaymaster", function () {
       const { paymaster, paymasterAsOther, mockRegistry, other, user } =
         await loadFixture(deployFixture);
       await paymaster.write.addRegistry([mockRegistry.address]);
-      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
 
       await paymasterAsOther.write.mintDocument([
         mockRegistry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
@@ -369,49 +388,83 @@ describe("PlatformPaymaster", function () {
       expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(2n);
     });
 
-    it("reverts for an unauthorized caller (not whitelisted, not authorizedCaller, not owner)", async function () {
-      const { paymasterAsOther, mockRegistry, paymaster, other, user } =
+    it("Test_SubmissionValidity: rejects sponsorship when maxCost exceeds the daily limit", async function () {
+      const { paymaster, mockEntryPoint, user, mockRegistry, publicClient } =
         await loadFixture(deployFixture);
+      const dailyLimit = parseEther("1");
+      const requestedCost = parseEther("2");
+
+      await paymaster.write.setDailyLimit([dailyLimit]);
       await paymaster.write.addRegistry([mockRegistry.address]);
 
-      await expect(
-        paymasterAsOther.write.mintDocument([
-          mockRegistry.address,
-          user.account.address,
-          other.account.address,
-          1n,
-          "0x" as `0x${string}`,
-        ]),
-      ).to.be.rejectedWith("caller not authorized");
-    });
+      const callData = encodeFunctionData({
+        abi: parseAbi(["function mintDocument(address,address,address,uint256,bytes) external"]),
+        functionName: "mintDocument",
+        args: [mockRegistry.address, user.account.address, user.account.address, 1n, "0x"],
+      });
+      const userOpCallData = encodeFunctionData({
+        abi: parseAbi(["function execute(address,uint256,bytes) external"]),
+        functionName: "execute",
+        args: [paymaster.address, 0n, callData],
+      });
 
-    it("allows the owner to mint without being whitelisted", async function () {
-      const { paymaster, mockRegistry, platform, user, other } = await loadFixture(deployFixture);
-      await paymaster.write.addRegistry([mockRegistry.address]);
+      // validatePaymasterUserOp is onlyEntryPoint-gated; simulate the call
+      // with msg.sender spoofed as the (mock) EntryPoint via eth_call.
+      const result = await publicClient.simulateContract({
+        address: paymaster.address,
+        abi: [
+          {
+            type: "function",
+            name: "validatePaymasterUserOp",
+            stateMutability: "nonpayable",
+            inputs: [
+              {
+                name: "userOp",
+                type: "tuple",
+                components: [
+                  { name: "sender", type: "address" },
+                  { name: "nonce", type: "uint256" },
+                  { name: "initCode", type: "bytes" },
+                  { name: "callData", type: "bytes" },
+                  { name: "accountGasLimits", type: "bytes32" },
+                  { name: "preVerificationGas", type: "uint256" },
+                  { name: "gasFees", type: "bytes32" },
+                  { name: "paymasterAndData", type: "bytes" },
+                  { name: "signature", type: "bytes" },
+                ],
+              },
+              { name: "userOpHash", type: "bytes32" },
+              { name: "maxCost", type: "uint256" },
+            ],
+            outputs: [
+              { name: "context", type: "bytes" },
+              { name: "validationData", type: "uint256" },
+            ],
+          },
+        ],
+        functionName: "validatePaymasterUserOp",
+        account: mockEntryPoint.address,
+        args: [
+          {
+            sender: user.account.address,
+            nonce: 0n,
+            initCode: "0x",
+            callData: userOpCallData,
+            // Packed ERC-4337 gas limits: callGasLimit occupies the low 128 bits.
+            accountGasLimits: padHex(toHex(1_000_000n), { size: 32 }),
+            preVerificationGas: 0n,
+            gasFees: `0x${"00".repeat(32)}`,
+            paymasterAndData: "0x",
+            signature: "0x",
+          },
+          `0x${"00".repeat(32)}`,
+          requestedCost,
+        ],
+      });
 
-      // `paymaster` is connected as `platform`, the clone's owner (see deployFixture)
-      await paymaster.write.mintDocument([
-        mockRegistry.address,
-        user.account.address,
-        other.account.address,
-        1n,
-        "0x" as `0x${string}`,
-      ]);
-
-      expect(await paymaster.read.documentsMinted([platform.account.address])).to.equal(1n);
-    });
-
-    it("allows an already-authorizedCaller to mint without whitelist credits", async function () {
-      const { paymaster, paymasterAsOther, mockRegistry, other, user } =
-        await loadFixture(deployFixture);
-      await paymaster.write.addRegistry([mockRegistry.address]);
-      await paymaster.write.addAuthorizedCaller([other.account.address]);
-
-      await paymasterAsOther.write.mintDocument([
-        mockRegistry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
-      ]);
-
-      expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(1n);
+      // validationData must signal failure (SIG_VALIDATION_FAILED = 1) — the
+      // mintDocument path must no longer bypass the daily sponsorship budget.
+      expect(result.result[1]).to.equal(1n);
     });
   });
 

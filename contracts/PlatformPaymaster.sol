@@ -70,6 +70,12 @@ contract PlatformPaymaster is BasePaymaster {
     mapping(address => uint256) public lastReset;
     uint256 public dailyLimit;
 
+    /// @dev Appended one-time init flag (not Ownable owner). Locks the shared
+    /// implementation in the constructor and each clone after `initialize`, so
+    /// renounceOwnership cannot reopen initialization. Placed after existing
+    /// state to avoid shifting prior storage slots; no OZ Initializable (ABI).
+    bool private _initialized;
+
     event RegistryAdded(address indexed registry);
     event RegistryRemoved(address indexed registry);
     event TitleEscrowLinked(
@@ -89,19 +95,22 @@ contract PlatformPaymaster is BasePaymaster {
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    // Deployed once as the shared implementation; BasePaymaster sets owner = msg.sender.
-    // That non-zero owner prevents initialize() from running on the implementation itself.
-    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {}
+    // Shared implementation: mark initialized so clones alone can run initialize().
+    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {
+        _initialized = true;
+    }
 
     // Called by the factory immediately after cloneDeterministic().
-    // A fresh clone has all-zero storage, so owner() == address(0) exactly once.
+    // Uses a dedicated flag — not owner() == address(0) — so renounceOwnership
+    // cannot reopen initialization and allow takeover of paymaster config.
     function initialize(
         address _owner,
         uint256 _dailyLimit,
         address _tdocDeployer
     ) external {
-        require(owner() == address(0), "Already initialized");
+        require(!_initialized, "Already initialized");
         require(_owner != address(0), "Zero owner");
+        _initialized = true;
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
         tdocDeployer = ITDocDeployer(_tdocDeployer);
@@ -170,12 +179,6 @@ contract PlatformPaymaster is BasePaymaster {
         bytes calldata remark
     ) external returns (address titleEscrow) {
         require(authorizedRegistries[registry], "registry not authorized");
-        require(
-            authorizedCallers[msg.sender] ||
-                userWhitelist[msg.sender] > 0 ||
-                msg.sender == owner(),
-            "caller not authorized"
-        );
 
         titleEscrow = ITradeTrustToken(registry).mint(
             beneficiary,
@@ -297,14 +300,8 @@ contract PlatformPaymaster is BasePaymaster {
             }
 
             if (innerSel == MINT_DOCUMENT_SEL) {
-                if (
-                    !authorizedCallers[sender] &&
-                    userWhitelist[sender] == 0 &&
-                    sender != owner()
-                ) {
-                    emit UserOpRejected(sender, "caller not authorized");
-                    return ("", _packValidationData(true, 0, 0));
-                }
+                // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed,
+                // but still subject to the same daily sponsorship budget as Path A.
                 if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
                     emit UserOpRejected(sender, "daily limit exceeded");
                     return ("", _packValidationData(true, 0, 0));

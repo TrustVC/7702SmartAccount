@@ -5,9 +5,17 @@ import {PlatformPaymaster} from "./PlatformPaymaster.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
+/**
+ * @title PlatformAccountFactory
+ * @notice Deploys PlatformPaymaster clones. Public ABI matches `dev`
+ * (`deployPlatformPaymaster`, `computePaymasterAddress(bytes32)`, …).
+ * Onboarding is owner-gated; platform→paymaster binding is tracked privately.
+ */
 contract PlatformAccountFactory is Ownable {
     address public tdocDeployer;
     address public paymasterImplementation;
+    /// @dev Not exposed in ABI (private). Prevents duplicate platform onboarding.
+    mapping(address => address) private _attachedPaymaster;
 
     event PlatformOnboarded(
         address indexed platformAddress,
@@ -38,17 +46,26 @@ contract PlatformAccountFactory is Ownable {
         emit ImplementationUpdated(_impl);
     }
 
+    /// @notice Owner-only onboarding. CREATE2 salt is unchanged so
+    /// `computePaymasterAddress(bytes32)` stays ABI-compatible with `dev`.
     function deployPlatformPaymaster(
         address platformAddress,
         uint256 dailyLimit,
         bytes32 salt
-    ) external returns (address paymaster) {
+    ) external onlyOwner returns (address paymaster) {
+        require(platformAddress != address(0), "Zero address");
+        require(
+            _attachedPaymaster[platformAddress] == address(0),
+            "Already onboarded"
+        );
+
         paymaster = Clones.cloneDeterministic(paymasterImplementation, salt);
         PlatformPaymaster(payable(paymaster)).initialize(
             platformAddress,
             dailyLimit,
             tdocDeployer
         );
+        _attachedPaymaster[platformAddress] = paymaster;
         emit PlatformOnboarded(platformAddress, paymaster);
     }
 
