@@ -574,4 +574,147 @@ describe("PlatformPaymaster", function () {
       expect(limit).to.equal(parseEther("1"));
     });
   });
+
+  // ─── deployRegistry sponsorship accounting ───────────────────────────────
+
+  describe("deployRegistry UserOp validation / postOp", function () {
+    function buildDeployUserOp(
+      paymasterAddress: `0x${string}`,
+      sender: `0x${string}`,
+      innerCallData: `0x${string}`,
+    ) {
+      const userOpCallData = encodeFunctionData({
+        abi: parseAbi(["function execute(address,uint256,bytes) external"]),
+        functionName: "execute",
+        args: [paymasterAddress, 0n, innerCallData],
+      });
+      return {
+        sender,
+        nonce: 0n,
+        initCode: "0x" as const,
+        callData: userOpCallData,
+        accountGasLimits: padHex(toHex(1_000_000n), { size: 32 }),
+        preVerificationGas: 0n,
+        gasFees: `0x${"00".repeat(32)}` as `0x${string}`,
+        paymasterAndData: "0x" as const,
+        signature: "0x" as const,
+      };
+    }
+
+    async function postOpAsEntryPoint(
+      mockEntryPointAddress: `0x${string}`,
+      paymasterAddress: `0x${string}`,
+      mode: number,
+      context: `0x${string}`,
+      actualGasCost: bigint,
+    ) {
+      await hre.network.provider.request({
+        method: "hardhat_impersonateAccount",
+        params: [mockEntryPointAddress],
+      });
+      await hre.network.provider.send("hardhat_setBalance", [
+        mockEntryPointAddress,
+        toHex(parseEther("1")),
+      ]);
+      const entryPointWallet = await hre.viem.getWalletClient(mockEntryPointAddress);
+      await entryPointWallet.writeContract({
+        address: paymasterAddress,
+        abi: parseAbi([
+          "function postOp(uint8 mode, bytes context, uint256 actualGasCost, uint256 actualUserOpFeePerGas) external",
+        ]),
+        functionName: "postOp",
+        args: [mode, context, actualGasCost, 0n],
+        chain: entryPointWallet.chain,
+        account: entryPointWallet.account!,
+      });
+      await hre.network.provider.request({
+        method: "hardhat_stopImpersonatingAccount",
+        params: [mockEntryPointAddress],
+      });
+    }
+
+    it("rejects selector-only / malformed deployRegistry calldata", async function () {
+      const { paymaster, mockEntryPoint, user, publicClient } =
+        await loadFixture(deployFixture);
+      await paymaster.write.setUserWhitelist([user.account.address, 1n]);
+
+      // Selector only — not a valid (address,string,string) payload
+      const selectorOnly = encodeFunctionData({
+        abi: parseAbi(["function deployRegistry(address,string,string)"]),
+        functionName: "deployRegistry",
+        args: [zeroAddress, "n", "s"],
+      }).slice(0, 10) as `0x${string}`;
+
+      const result = await publicClient.simulateContract({
+        address: paymaster.address,
+        abi: validatePaymasterUserOpAbi,
+        functionName: "validatePaymasterUserOp",
+        account: mockEntryPoint.address,
+        args: [
+          buildDeployUserOp(paymaster.address, user.account.address, selectorOnly),
+          `0x${"00".repeat(32)}`,
+          parseEther("0.01"),
+        ],
+      });
+      expect(result.result[1]).to.equal(1n);
+    });
+
+    it("accepts well-formed deployRegistry calldata for whitelisted sender", async function () {
+      const { paymaster, mockEntryPoint, user, publicClient, impl } =
+        await loadFixture(deployFixture);
+      await paymaster.write.setUserWhitelist([user.account.address, 1n]);
+
+      const inner = encodeFunctionData({
+        abi: parseAbi(["function deployRegistry(address,string,string)"]),
+        functionName: "deployRegistry",
+        args: [impl.address, "Name", "SYM"],
+      });
+
+      const result = await publicClient.simulateContract({
+        address: paymaster.address,
+        abi: validatePaymasterUserOpAbi,
+        functionName: "validatePaymasterUserOp",
+        account: mockEntryPoint.address,
+        args: [
+          buildDeployUserOp(paymaster.address, user.account.address, inner),
+          `0x${"00".repeat(32)}`,
+          parseEther("0.01"),
+        ],
+      });
+      expect(result.result[1]).to.equal(0n);
+      // last 32-byte word of abi.encode(address,uint256,bool) is isDeployment
+      const context = result.result[0];
+      expect(BigInt(`0x${context.slice(2).slice(-64)}`)).to.equal(1n);
+    });
+
+    it("failed deployment-shaped op (opReverted) increments dailySpend", async function () {
+      const { paymaster, mockEntryPoint, user } = await loadFixture(deployFixture);
+      const gasCost = parseEther("0.05");
+      const context = encodeAbiParameters(parseAbiParameters("address, uint256, bool"), [
+        user.account.address,
+        gasCost,
+        true, // was classified as deployment
+      ]);
+
+      // PostOpMode.opReverted = 1
+      await postOpAsEntryPoint(mockEntryPoint.address, paymaster.address, 1, context, gasCost);
+
+      expect(await paymaster.read.dailySpend([user.account.address])).to.equal(gasCost);
+    });
+
+    it("successful deployment (opSucceeded) does not increment dailySpend", async function () {
+      const { paymaster, mockEntryPoint, user } = await loadFixture(deployFixture);
+      const gasCost = parseEther("0.05");
+      const context = encodeAbiParameters(parseAbiParameters("address, uint256, bool"), [
+        user.account.address,
+        gasCost,
+        true,
+      ]);
+
+      // PostOpMode.opSucceeded = 0
+      await postOpAsEntryPoint(mockEntryPoint.address, paymaster.address, 0, context, gasCost);
+
+      expect(await paymaster.read.dailySpend([user.account.address])).to.equal(0n);
+    });
+  });
 });

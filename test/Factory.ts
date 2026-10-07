@@ -232,12 +232,40 @@ describe("PlatformAccountFactory", function () {
       );
     });
 
-    it("computePaymasterAddress predicts the deployed address", async function () {
+    it("computePaymasterAddress(platform, salt) predicts the deployed address", async function () {
       const { factory, platform } = await loadFixture(deployFixture);
       const salt = `0x${"cc".repeat(32)}` as `0x${string}`;
-      const predicted = await factory.read.computePaymasterAddress([salt]);
+      const predicted = await factory.read.computePaymasterAddress([
+        platform.account.address,
+        salt,
+      ]);
       const cloneAddr = await deployClone(factory, platform, salt);
       expect(cloneAddr.toLowerCase()).to.equal(predicted.toLowerCase());
+    });
+
+    it("same salt yields different addresses for different platforms", async function () {
+      const { factory, platform, other } = await loadFixture(deployFixture);
+      const salt = `0x${"11".repeat(32)}` as `0x${string}`;
+      const addrA = await factory.read.computePaymasterAddress([
+        platform.account.address,
+        salt,
+      ]);
+      const addrB = await factory.read.computePaymasterAddress([
+        other.account.address,
+        salt,
+      ]);
+      expect(addrA.toLowerCase()).to.not.equal(addrB.toLowerCase());
+    });
+
+    it("unbound salt alone does not match platform-bound deploy address", async function () {
+      const { factory, platform } = await loadFixture(deployFixture);
+      const salt = `0x${"22".repeat(32)}` as `0x${string}`;
+      const unbound = await factory.read.computePaymasterAddress([salt]);
+      const bound = await factory.read.computePaymasterAddress([
+        platform.account.address,
+        salt,
+      ]);
+      expect(unbound.toLowerCase()).to.not.equal(bound.toLowerCase());
     });
 
     it("clone cannot be re-initialized", async function () {

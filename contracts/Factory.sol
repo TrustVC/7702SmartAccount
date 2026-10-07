@@ -7,9 +7,9 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 /**
  * @title PlatformAccountFactory
- * @notice Deploys PlatformPaymaster clones. Public ABI matches `dev`
- * (`deployPlatformPaymaster`, `computePaymasterAddress(bytes32)`, …).
- * Onboarding is owner-gated; platform→paymaster binding is tracked privately.
+ * @notice Deploys PlatformPaymaster clones. Onboarding is owner-gated; CREATE2 salt is
+ * bound to `platformAddress` so the same user salt cannot collide across platforms or be
+ * front-run for a different platform's predicted address.
  */
 contract PlatformAccountFactory is Ownable {
     address public tdocDeployer;
@@ -46,8 +46,8 @@ contract PlatformAccountFactory is Ownable {
         emit ImplementationUpdated(_impl);
     }
 
-    /// @notice Owner-only onboarding. CREATE2 salt is unchanged so
-    /// `computePaymasterAddress(bytes32)` stays ABI-compatible with `dev`.
+    /// @notice Owner-only onboarding. CREATE2 uses `keccak256(abi.encode(platformAddress, salt))`
+    /// so the deterministic address is bound to the platform, not salt alone.
     function deployPlatformPaymaster(
         address platformAddress,
         uint256 dailyLimit,
@@ -59,7 +59,8 @@ contract PlatformAccountFactory is Ownable {
             "Already onboarded"
         );
 
-        paymaster = Clones.cloneDeterministic(paymasterImplementation, salt);
+        bytes32 boundSalt = _boundSalt(platformAddress, salt);
+        paymaster = Clones.cloneDeterministic(paymasterImplementation, boundSalt);
         PlatformPaymaster(payable(paymaster)).initialize(
             platformAddress,
             dailyLimit,
@@ -69,7 +70,21 @@ contract PlatformAccountFactory is Ownable {
         emit PlatformOnboarded(platformAddress, paymaster);
     }
 
-    // Address is determined solely by implementation + salt (not by constructor args).
+    /// @notice Predict clone address for a platform + salt pair (matches deploy).
+    function computePaymasterAddress(
+        address platformAddress,
+        bytes32 salt
+    ) external view returns (address) {
+        return
+            Clones.predictDeterministicAddress(
+                paymasterImplementation,
+                _boundSalt(platformAddress, salt),
+                address(this)
+            );
+    }
+
+    /// @dev Legacy overload: `salt` must already be the bound value
+    /// `keccak256(abi.encode(platformAddress, userSalt))`. Prefer the two-arg form.
     function computePaymasterAddress(
         bytes32 salt
     ) external view returns (address) {
@@ -79,5 +94,12 @@ contract PlatformAccountFactory is Ownable {
                 salt,
                 address(this)
             );
+    }
+
+    function _boundSalt(
+        address platformAddress,
+        bytes32 salt
+    ) private pure returns (bytes32) {
+        return keccak256(abi.encode(platformAddress, salt));
     }
 }

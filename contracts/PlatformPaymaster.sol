@@ -36,7 +36,10 @@ interface IAccessControl {
  * Access control is enforced by the Storage contract itself:
  *   require(msg.sender == beneficiary || msg.sender == holder)
  * so non-beneficiary/holder callers are rejected at execution time.
- * If the call reverts, _postOp skips the spend update.
+ *
+ * Deployment sponsorship: only *successful* deployRegistry ops skip dailySpend
+ * (credit-gated). Failed deployment-shaped UserOps still increment dailySpend so
+ * repeated revert-and-retry cannot drain the EntryPoint deposit unboundedly.
  */
 contract PlatformPaymaster is BasePaymaster {
     bytes4 private constant EXECUTE_SEL =
@@ -292,7 +295,17 @@ contract PlatformPaymaster is BasePaymaster {
                     emit UserOpRejected(sender, "not whitelisted");
                     return ("", _packValidationData(true, 0, 0));
                 }
-                // credits consumed inside deployRegistry; flag as deployment to skip daily spend
+                // Reject malformed payloads early (selector-only attack / bad ABI data).
+                if (!_isValidDeployRegistryCalldata(innerData)) {
+                    emit UserOpRejected(sender, "invalid deployRegistry calldata");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                // Failed deploy attempts still hit dailySpend in _postOp — enforce budget here.
+                if (dailyLimit > 0 && _effectiveDailySpend(sender) + maxCost > dailyLimit) {
+                    emit UserOpRejected(sender, "daily limit exceeded");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                // Flag as deployment: successful ops skip dailySpend; failed ops do not.
                 return (
                     abi.encode(sender, maxCost, true),
                     _packValidationData(false, 0, 0)
@@ -326,6 +339,7 @@ contract PlatformPaymaster is BasePaymaster {
         uint256 actualGasCost,
         uint256 /*actualUserOpFeePerGas*/
     ) internal override {
+        // postOp itself failed previously — avoid double-counting.
         if (mode == PostOpMode.postOpReverted) return;
 
         (address sender, , bool isDeployment) = abi.decode(
@@ -333,8 +347,11 @@ contract PlatformPaymaster is BasePaymaster {
             (address, uint256, bool)
         );
 
-        // Deployment ops are credit-gated; skip daily spend tracking for them
-        if (!isDeployment) {
+        // Only successful deployments are credit-gated and skip dailySpend.
+        // Failed deployment-shaped ops (opReverted) must count toward dailySpend
+        // so attackers cannot repeatedly fail-deploy and drain the deposit.
+        bool skipDailySpend = isDeployment && mode == PostOpMode.opSucceeded;
+        if (!skipDailySpend) {
             if (block.timestamp > lastReset[sender] + 1 days) {
                 dailySpend[sender] = 0;
                 lastReset[sender] = block.timestamp;
@@ -343,6 +360,43 @@ contract PlatformPaymaster is BasePaymaster {
         }
 
         emit UserOpSponsored(sender, actualGasCost);
+    }
+
+    /// @dev True when `innerData` is a well-formed `deployRegistry(address,string,string)` call
+    /// with a non-zero implementation address (rejects selector-only / truncated payloads).
+    function _isValidDeployRegistryCalldata(bytes memory innerData) private pure returns (bool) {
+        // selector (4) + address + 2 dynamic offsets (96) + at least one string length word
+        if (innerData.length < 4 + 128) return false;
+
+        uint256 implWord;
+        uint256 nameOff;
+        uint256 symbolOff;
+        assembly {
+            let p := add(innerData, 36) // skip bytes.length + selector
+            implWord := mload(p)
+            nameOff := mload(add(p, 32))
+            symbolOff := mload(add(p, 64))
+        }
+
+        // Standard ABI address encoding: high 96 bits zero, address non-zero.
+        if (implWord >> 160 != 0) return false;
+        if (address(uint160(implWord)) == address(0)) return false;
+
+        uint256 argsLen = innerData.length - 4;
+        if (nameOff < 96 || symbolOff < 96) return false;
+        if (nameOff + 32 > argsLen || symbolOff + 32 > argsLen) return false;
+
+        uint256 nameLen;
+        uint256 symbolLen;
+        assembly {
+            let args := add(innerData, 36)
+            nameLen := mload(add(args, nameOff))
+            symbolLen := mload(add(args, symbolOff))
+        }
+
+        uint256 nameEnd = nameOff + 32 + ((nameLen + 31) / 32) * 32;
+        uint256 symbolEnd = symbolOff + 32 + ((symbolLen + 31) / 32) * 32;
+        return nameEnd <= argsLen && symbolEnd <= argsLen;
     }
 
     /// @dev Validation uses zero spend after the window expires so a full prior
