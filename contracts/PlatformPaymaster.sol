@@ -70,6 +70,10 @@ contract PlatformPaymaster is BasePaymaster {
     mapping(address => uint256) public lastReset;
     uint256 public dailyLimit;
 
+    // Set once by initialize() (or the constructor for the implementation).
+    // Kept separate from owner() so renounceOwnership() cannot re-open initialize().
+    bool private _initialized;
+
     event RegistryAdded(address indexed registry);
     event RegistryRemoved(address indexed registry);
     event TitleEscrowLinked(
@@ -89,19 +93,22 @@ contract PlatformPaymaster is BasePaymaster {
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    // Deployed once as the shared implementation; BasePaymaster sets owner = msg.sender.
-    // That non-zero owner prevents initialize() from running on the implementation itself.
-    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {}
+    // Deployed once as the shared implementation; lock it so initialize() can never run on it.
+    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {
+        _initialized = true;
+    }
 
     // Called by the factory immediately after cloneDeterministic().
-    // A fresh clone has all-zero storage, so owner() == address(0) exactly once.
+    // Initialization state is tracked separately from ownership, so renounceOwnership()
+    // cannot make an initialized clone look fresh and re-open initialize().
     function initialize(
         address _owner,
         uint256 _dailyLimit,
         address _tdocDeployer
     ) external {
-        require(owner() == address(0), "Already initialized");
+        require(!_initialized, "Already initialized");
         require(_owner != address(0), "Zero owner");
+        _initialized = true;
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
         tdocDeployer = ITDocDeployer(_tdocDeployer);
