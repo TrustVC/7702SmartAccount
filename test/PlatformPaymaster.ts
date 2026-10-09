@@ -4,7 +4,19 @@ import chaiAsPromised from "chai-as-promised";
 import hre from "hardhat";
 
 chai.use(chaiAsPromised);
-import { getAddress, parseEther, zeroAddress } from "viem";
+import {
+  decodeAbiParameters,
+  encodeAbiParameters,
+  encodeFunctionData,
+  getAddress,
+  keccak256,
+  padHex,
+  parseAbi,
+  parseEther,
+  stringToHex,
+  toHex,
+  zeroAddress,
+} from "viem";
 
 describe("PlatformPaymaster", function () {
   async function deployFixture() {
@@ -62,6 +74,16 @@ describe("PlatformPaymaster", function () {
   // ─── Initialize ────────────────────────────────────────────────────────────
 
   describe("initialize", function () {
+    it("cannot be re-initialized after the owner renounces ownership", async function () {
+      const { paymaster, paymasterAsOther, other } = await loadFixture(deployFixture);
+      await paymaster.write.renounceOwnership();
+      expect(await paymaster.read.owner()).to.equal(zeroAddress);
+      await expect(
+        paymasterAsOther.write.initialize([other.account.address, 0n, other.account.address]),
+      ).to.be.rejectedWith("Already initialized");
+      expect(await paymaster.read.owner()).to.equal(zeroAddress);
+    });
+
     it("sets owner, dailyLimit, tdocDeployer correctly", async function () {
       const { paymaster, platform, mockTdocDeployer } = await loadFixture(deployFixture);
       expect(await paymaster.read.owner()).to.equal(getAddress(platform.account.address));
@@ -424,5 +446,228 @@ describe("PlatformPaymaster", function () {
       expect(spent).to.equal(0n);
       expect(limit).to.equal(parseEther("1"));
     });
+  });
+
+  // ─── Sponsorship validation & accounting ───────────────────────────────────
+
+  describe("sponsorship validation & accounting", function () {
+    const OP_SUCCEEDED = 0;
+    const OP_REVERTED = 1;
+    const actualGasCost = parseEther("0.5");
+    const deploySelector = keccak256(
+      stringToHex("deployRegistry(address,string,string)"),
+    ).slice(0, 10) as `0x${string}`;
+    const deployAbi = parseAbi([
+      "function deployRegistry(address implementation, string name, string symbol) external returns (address)",
+    ]);
+    const executeAbi = parseAbi([
+      "function execute(address,uint256,bytes) external",
+    ]);
+
+    function userOpFor(
+      sender: `0x${string}`,
+      target: `0x${string}`,
+      innerData: `0x${string}`,
+    ) {
+      return {
+        sender,
+        nonce: 0n,
+        initCode: "0x" as `0x${string}`,
+        callData: encodeFunctionData({
+          abi: executeAbi,
+          functionName: "execute",
+          args: [target, 0n, innerData],
+        }),
+        accountGasLimits: padHex(toHex(1_000_000n), { size: 32 }),
+        preVerificationGas: 0n,
+        gasFees: `0x${"00".repeat(32)}` as `0x${string}`,
+        paymasterAndData: "0x" as `0x${string}`,
+        signature: "0x" as `0x${string}`,
+      };
+    }
+
+    async function validate(
+      f: Awaited<ReturnType<typeof deployFixture>>,
+      innerData: `0x${string}`,
+      sender: `0x${string}` = f.other.account.address,
+      maxCost: bigint = actualGasCost,
+    ) {
+      return f.publicClient.simulateContract({
+        address: f.mockEntryPoint.address,
+        abi: f.mockEntryPoint.abi,
+        functionName: "validatePaymasterUserOp",
+        args: [
+          f.paymaster.address,
+          userOpFor(sender, f.paymaster.address, innerData),
+          `0x${"00".repeat(32)}`,
+          maxCost,
+        ],
+      });
+    }
+
+    function decodeContext(context: `0x${string}`) {
+      return decodeAbiParameters(
+        [{ type: "address" }, { type: "uint256" }, { type: "bool" }],
+        context,
+      );
+    }
+
+    async function setup() {
+      const f = await loadFixture(deployFixture);
+      await f.paymaster.write.setDailyLimit([parseEther("1")]);
+      await f.paymaster.write.setUserWhitelist([f.other.account.address, 1n]);
+      return f;
+    }
+
+    it("rejects deployment-shaped calldata with malformed ABI args", async function () {
+      const f = await setup();
+      const malformed = `${deploySelector}${"00".repeat(4)}` as `0x${string}`;
+      await expect(validate(f, malformed)).to.be.rejected;
+    });
+
+    it("rejects deployment when tdocDeployer is not set", async function () {
+      const { mockEntryPoint, publicClient, other, impl } =
+        await loadFixture(deployFixture);
+      // A directly deployed paymaster is owned by the deployer and has no tdocDeployer
+      const clone = await hre.viem.deployContract("PlatformPaymaster", [
+        mockEntryPoint.address,
+      ]);
+      await clone.write.setUserWhitelist([other.account.address, 1n]);
+      const data = encodeFunctionData({
+        abi: deployAbi,
+        functionName: "deployRegistry",
+        args: [impl.address, "Trade Trust", "TT"],
+      });
+      const { result } = await publicClient.simulateContract({
+        address: mockEntryPoint.address,
+        abi: mockEntryPoint.abi,
+        functionName: "validatePaymasterUserOp",
+        args: [
+          clone.address,
+          userOpFor(other.account.address, clone.address, data),
+          `0x${"00".repeat(32)}`,
+          actualGasCost,
+        ],
+      });
+      expect(result[1]).to.equal(1n);
+    });
+
+    it("well-formed deployment is flagged as a deployment", async function () {
+      const f = await setup();
+      const data = encodeFunctionData({
+        abi: deployAbi,
+        functionName: "deployRegistry",
+        args: [f.impl.address, "Trade Trust", "TT"],
+      });
+      const { result } = await validate(f, data);
+      expect(result[1]).to.equal(0n);
+      expect(decodeContext(result[0])[2]).to.equal(true);
+    });
+
+    it("successful deployment skips dailySpend", async function () {
+      const f = await setup();
+      const context = encodeAbiContext(f.other.account.address, true);
+      await f.mockEntryPoint.write.callPostOp([
+        f.paymaster.address,
+        OP_SUCCEEDED,
+        context,
+        actualGasCost,
+        0n,
+      ]);
+      expect(await f.paymaster.read.dailySpend([f.other.account.address])).to.equal(0n);
+    });
+
+    it("reverted deployment is charged to dailySpend and burns the credit", async function () {
+      const f = await setup();
+      const context = encodeAbiContext(f.other.account.address, true);
+      await f.mockEntryPoint.write.callPostOp([
+        f.paymaster.address,
+        OP_REVERTED,
+        context,
+        actualGasCost,
+        0n,
+      ]);
+      expect(await f.paymaster.read.dailySpend([f.other.account.address])).to.equal(
+        actualGasCost,
+      );
+      expect(await f.paymaster.read.userWhitelist([f.other.account.address])).to.equal(0n);
+
+      // Credit gone — the same deployment-shaped op can no longer be sponsored
+      const data = encodeFunctionData({
+        abi: deployAbi,
+        functionName: "deployRegistry",
+        args: [f.impl.address, "Trade Trust", "TT"],
+      });
+      const { result } = await validate(f, data);
+      expect(result[1]).to.equal(1n);
+    });
+
+    function mintData(f: Awaited<ReturnType<typeof deployFixture>>) {
+      return encodeFunctionData({
+        abi: parseAbi([
+          "function mintDocument(address,address,address,uint256,bytes) external",
+        ]),
+        functionName: "mintDocument",
+        args: [
+          f.mockRegistry.address,
+          f.user.account.address,
+          f.user.account.address,
+          1n,
+          "0x",
+        ],
+      });
+    }
+
+    it("rejects mintDocument sponsorship for an unauthorized sender", async function () {
+      const f = await setup();
+      await f.paymaster.write.addRegistry([f.mockRegistry.address]);
+      const { result } = await validate(f, mintData(f), f.user.account.address);
+      expect(result[1]).to.equal(1n);
+    });
+
+    it("rejects mintDocument sponsorship above the daily limit", async function () {
+      const f = await setup();
+      await f.paymaster.write.addRegistry([f.mockRegistry.address]);
+      await f.paymaster.write.addAuthorizedCaller([f.user.account.address]);
+      const { result } = await validate(
+        f,
+        mintData(f),
+        f.user.account.address,
+        parseEther("2"), // > dailyLimit of 1 ETH
+      );
+      expect(result[1]).to.equal(1n);
+    });
+
+    it("rejects mintDocument once accumulated dailySpend reaches the limit", async function () {
+      const f = await setup();
+      await f.paymaster.write.addRegistry([f.mockRegistry.address]);
+      await f.paymaster.write.addAuthorizedCaller([f.user.account.address]);
+      const sender = f.user.account.address;
+
+      const first = await validate(f, mintData(f), sender);
+      expect(first.result[1]).to.equal(0n);
+      // Two sponsored mints at 0.5 ETH each exhaust the 1 ETH daily limit
+      for (let i = 0; i < 2; i++) {
+        await f.mockEntryPoint.write.callPostOp([
+          f.paymaster.address,
+          OP_SUCCEEDED,
+          encodeAbiParameters(
+            [{ type: "address" }, { type: "uint256" }, { type: "bool" }],
+            [sender, actualGasCost, false],
+          ),
+          actualGasCost,
+          0n,
+        ]);
+      }
+      const { result } = await validate(f, mintData(f), sender);
+      expect(result[1]).to.equal(1n);
+    });
+
+    function encodeAbiContext(sender: `0x${string}`, isDeployment: boolean) {
+      return encodeAbiParameters(
+        [{ type: "address" }, { type: "uint256" }, { type: "bool" }],
+        [sender, actualGasCost, isDeployment],
+      );
+    }
   });
 });
