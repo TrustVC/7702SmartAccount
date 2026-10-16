@@ -36,7 +36,7 @@ interface IAccessControl {
  * Access control is enforced by the Storage contract itself:
  *   require(msg.sender == beneficiary || msg.sender == holder)
  * so non-beneficiary/holder callers are rejected at execution time.
- * If the call reverts, _postOp skips the spend update.
+ * Reverted ops are still charged to dailySpend in _postOp (gas was paid).
  */
 contract PlatformPaymaster is BasePaymaster {
     bytes4 private constant EXECUTE_SEL =
@@ -70,6 +70,10 @@ contract PlatformPaymaster is BasePaymaster {
     mapping(address => uint256) public lastReset;
     uint256 public dailyLimit;
 
+    // Set once by initialize() (or the constructor for the implementation).
+    // Kept separate from owner() so renounceOwnership() cannot re-open initialize().
+    bool private _initialized;
+
     event RegistryAdded(address indexed registry);
     event RegistryRemoved(address indexed registry);
     event TitleEscrowLinked(
@@ -89,19 +93,22 @@ contract PlatformPaymaster is BasePaymaster {
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    // Deployed once as the shared implementation; BasePaymaster sets owner = msg.sender.
-    // That non-zero owner prevents initialize() from running on the implementation itself.
-    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {}
+    // Deployed once as the shared implementation; lock it so initialize() can never run on it.
+    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {
+        _initialized = true;
+    }
 
     // Called by the factory immediately after cloneDeterministic().
-    // A fresh clone has all-zero storage, so owner() == address(0) exactly once.
+    // Initialization state is tracked separately from ownership, so renounceOwnership()
+    // cannot make an initialized clone look fresh and re-open initialize().
     function initialize(
         address _owner,
         uint256 _dailyLimit,
         address _tdocDeployer
     ) external {
-        require(owner() == address(0), "Already initialized");
+        require(!_initialized, "Already initialized");
         require(_owner != address(0), "Zero owner");
+        _initialized = true;
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
         tdocDeployer = ITDocDeployer(_tdocDeployer);
@@ -278,6 +285,10 @@ contract PlatformPaymaster is BasePaymaster {
         // Double-spend safe: EntryPoint sequential nonces allow only one
         // pending UserOp per sender in the mempool at a time.
         if (target == address(this)) {
+            if (innerData.length < 4) {
+                emit UserOpRejected(sender, "inner callData too short");
+                return ("", _packValidationData(true, 0, 0));
+            }
             bytes4 innerSel;
             assembly {
                 innerSel := mload(add(innerData, 32))
@@ -289,7 +300,15 @@ contract PlatformPaymaster is BasePaymaster {
                     emit UserOpRejected(sender, "not whitelisted");
                     return ("", _packValidationData(true, 0, 0));
                 }
-                // credits consumed inside deployRegistry; flag as deployment to skip daily spend
+                if (address(tdocDeployer) == address(0)) {
+                    emit UserOpRejected(sender, "TdocDeployer not set");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                // Reverts on malformed ABI args, so only well-formed
+                // deployRegistry(address,string,string) payloads are sponsored.
+                _decodeDeployArgs(innerData);
+                // credits consumed inside deployRegistry; flag as deployment to skip daily spend.
+                // _postOp falls back to normal accounting if execution reverts.
                 return (
                     abi.encode(sender, maxCost, true),
                     _packValidationData(false, 0, 0)
@@ -336,16 +355,36 @@ contract PlatformPaymaster is BasePaymaster {
             (address, uint256, bool)
         );
 
-        // Deployment ops are credit-gated; skip daily spend tracking for them
-        if (!isDeployment) {
+        // Successful deployments are credit-gated; skip daily spend tracking for them.
+        // A reverted deployment rolls back the credit decrement inside deployRegistry,
+        // so charge it like a normal op and burn the credit here instead — otherwise a
+        // sender could replay failing deployments to drain the deposit for free.
+        if (!isDeployment || mode != PostOpMode.opSucceeded) {
             if (block.timestamp > lastReset[sender] + 1 days) {
                 dailySpend[sender] = 0;
                 lastReset[sender] = block.timestamp;
             }
             dailySpend[sender] += actualGasCost;
         }
+        if (isDeployment && mode == PostOpMode.opReverted) {
+            uint256 credits = userWhitelist[sender];
+            if (credits > 0) {
+                userWhitelist[sender] = credits - 1;
+                emit UserWhitelistUpdated(sender, credits - 1);
+            }
+        }
 
         emit UserOpSponsored(sender, actualGasCost);
+    }
+
+    // Strips the 4-byte selector and ABI-decodes deployRegistry's arguments.
+    function _decodeDeployArgs(bytes memory innerData) private pure {
+        uint256 argsLength = innerData.length - 4;
+        bytes memory args = new bytes(argsLength);
+        assembly ("memory-safe") {
+            mcopy(add(args, 32), add(innerData, 36), argsLength)
+        }
+        abi.decode(args, (address, string, string));
     }
 
     // v0.8 contracts on Etherspot EntryPoint — skip interface mismatch check

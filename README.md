@@ -63,7 +63,7 @@ Per-platform ERC-4337 paymaster cloned from a shared implementation.
 Deploys `PlatformPaymaster` clones deterministically.
 
 - `deployPlatformPaymaster(platformAddress, dailyLimit, salt)` — clones the implementation and calls `initialize`
-- `computePaymasterAddress(salt)` — predict the clone address before deployment
+- `computePaymasterAddress(deployer, platformAddress, salt)` — predict the clone address before deployment. The CREATE2 salt is `keccak256(abi.encode(deployer, platformAddress, salt))`, so another caller cannot take the predicted address.
 - `updateTdocDeployer(addr)` — update TDoc deployer (`onlyOwner`)
 - `updatePaymasterImplementation(addr)` — upgrade the implementation for future clones (`onlyOwner`)
 
