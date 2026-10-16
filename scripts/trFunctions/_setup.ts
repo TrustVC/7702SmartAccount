@@ -17,6 +17,7 @@ import { to7702SimpleSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import * as dotenv from "dotenv";
 import { getNetworkConfig, getEnv } from "../lib/network";
+import { PAYMASTER_POST_OP_GAS_LIMIT } from "../lib/userOp";
 dotenv.config();
 
 const PERMISSIONLESS_IMPL = "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
@@ -87,7 +88,7 @@ export async function buildClient() {
           paymaster: PAYMASTER_ADDR,
           paymasterData: "0x" as `0x${string}`,
           paymasterVerificationGasLimit: 300_000n,
-          paymasterPostOpGasLimit: 150_000n,
+          paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS_LIMIT,
           isFinal: false,
         };
       },
@@ -96,7 +97,7 @@ export async function buildClient() {
           paymaster: PAYMASTER_ADDR,
           paymasterData: "0x" as `0x${string}`,
           paymasterVerificationGasLimit: 300_000n,
-          paymasterPostOpGasLimit: 150_000n,
+          paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS_LIMIT,
         };
       },
     },

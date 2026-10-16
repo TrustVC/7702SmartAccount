@@ -23,15 +23,18 @@ interface ITradeTrustToken {
 interface IAccessControl {
     function grantRole(bytes32 role, address account) external;
     function renounceRole(bytes32 role, address callerConfirmation) external;
+    function hasRole(bytes32 role, address account) external view returns (bool);
 }
 
 /**
  * PlatformPaymaster — validates by inspecting the target contract in callData.
  *
- * Validation strategy (no third-party storage reads → bundler compliant):
+ * Validation strategy (paymaster must be staked → bundler compliant):
  *   1. Decode userOp.callData → must be execute(address to, uint256, bytes)
  *   2. Check `to` is in authorizedRegistries (paymaster's own storage)
- *   3. Check daily spend (paymaster's own storage — always allowed)
+ *   3. mintDocument only: sender holds MINTER_ROLE on the registry
+ *      (registry storage associated with sender)
+ *   4. Check daily spend (paymaster's own storage)
  *
  * Access control is enforced by the Storage contract itself:
  *   require(msg.sender == beneficiary || msg.sender == holder)
@@ -168,7 +171,7 @@ contract PlatformPaymaster is BasePaymaster {
 
     // Mints a TradeTrust document, captures the TitleEscrow, and auto-authorizes it.
     // Paymaster must hold MINTER_ROLE on the registry.
-    // Callable gaslessly by userWhitelist users (credits not consumed — only deployRegistry uses credits).
+    // Caller must hold MINTER_ROLE on the registry (the deployer, or whoever they granted it to).
     function mintDocument(
         address registry,
         address beneficiary,
@@ -177,11 +180,10 @@ contract PlatformPaymaster is BasePaymaster {
         bytes calldata remark
     ) external returns (address titleEscrow) {
         require(authorizedRegistries[registry], "registry not authorized");
+        // The registry only sees the paymaster as minter, so check the real caller here
         require(
-            authorizedCallers[msg.sender] ||
-                userWhitelist[msg.sender] > 0 ||
-                msg.sender == owner(),
-            "caller not authorized"
+            IAccessControl(registry).hasRole(MINTER_ROLE, msg.sender),
+            "not registry minter"
         );
 
         titleEscrow = ITradeTrustToken(registry).mint(
@@ -271,14 +273,7 @@ contract PlatformPaymaster is BasePaymaster {
                 emit UserOpRejected(sender, "caller not authorized");
                 return ("", _packValidationData(true, 0, 0));
             }
-            if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
-                emit UserOpRejected(sender, "daily limit exceeded");
-                return ("", _packValidationData(true, 0, 0));
-            }
-            return (
-                abi.encode(sender, maxCost, false),
-                _packValidationData(false, 0, 0)
-            );
+            return _sponsorWithinDailyLimit(sender, maxCost);
         }
 
         // Path B — gasless paymaster call (deployRegistry or mintDocument)
@@ -316,22 +311,25 @@ contract PlatformPaymaster is BasePaymaster {
             }
 
             if (innerSel == MINT_DOCUMENT_SEL) {
-                if (
-                    !authorizedCallers[sender] &&
-                    userWhitelist[sender] == 0 &&
-                    sender != owner()
-                ) {
-                    emit UserOpRejected(sender, "caller not authorized");
+                // Mirror mintDocument's checks so non-minters can't get failing ops sponsored.
+                // hasRole reads _roles[role][sender] — storage associated with sender (ERC-7562).
+                if (innerData.length < 36) {
+                    emit UserOpRejected(sender, "mint calldata too short");
                     return ("", _packValidationData(true, 0, 0));
                 }
-                if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
-                    emit UserOpRejected(sender, "daily limit exceeded");
+                address registry;
+                assembly {
+                    registry := mload(add(innerData, 36))
+                }
+                if (!authorizedRegistries[registry]) {
+                    emit UserOpRejected(sender, "registry not authorized");
                     return ("", _packValidationData(true, 0, 0));
                 }
-                return (
-                    abi.encode(sender, maxCost, false),
-                    _packValidationData(false, 0, 0)
-                );
+                if (!IAccessControl(registry).hasRole(MINTER_ROLE, sender)) {
+                    emit UserOpRejected(sender, "not registry minter");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                return _sponsorWithinDailyLimit(sender, maxCost);
             }
 
             emit UserOpRejected(sender, "unauthorized paymaster call");
@@ -340,6 +338,33 @@ contract PlatformPaymaster is BasePaymaster {
 
         emit UserOpRejected(sender, "unauthorized target");
         return ("", _packValidationData(true, 0, 0));
+    }
+
+    // Approves a daily-limit-tracked op. If the sender is over today's limit, the op
+    // is approved with validAfter = window end, so it only runs after the window rolls
+    // over and _postOp resets the counter. block.timestamp is banned in validation
+    // (ERC-7562), so the EntryPoint enforces the time via validAfter.
+    function _sponsorWithinDailyLimit(
+        address sender,
+        uint256 maxCost
+    ) internal returns (bytes memory context, uint256 validationData) {
+        context = abi.encode(sender, maxCost, false);
+
+        if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
+            // Even a fresh window can't fit this op
+            if (maxCost > dailyLimit) {
+                emit UserOpRejected(sender, "maxCost exceeds daily limit");
+                return ("", _packValidationData(true, 0, 0));
+            }
+            // EntryPoint runs the op only when block.timestamp > validAfter, which is
+            // exactly when _postOp's reset condition becomes true
+            return (
+                context,
+                _packValidationData(false, 0, uint48(lastReset[sender] + 1 days))
+            );
+        }
+
+        return (context, _packValidationData(false, 0, 0));
     }
 
     function _postOp(
