@@ -153,11 +153,13 @@ async function main() {
     data: deployRegistryData,
   });
 
+  // A bundle can hold other users' UserOps — pick this paymaster's event for this sender
   const txReceipt = await publicClient.getTransactionReceipt({ hash: txHash });
   const [deployedEvent] = parseEventLogs({
     abi: paymasterAbi,
-    logs: txReceipt.logs,
+    logs: txReceipt.logs.filter((log) => log.address.toLowerCase() === PAYMASTER_ADDR.toLowerCase()),
     eventName: "RegistryDeployed",
+    args: { user: ownerAccount.address },
   });
   const registryAddress = deployedEvent?.args.deployed;
 
