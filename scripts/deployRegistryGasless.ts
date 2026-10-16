@@ -24,6 +24,7 @@ import {
   http,
   encodeFunctionData,
   parseAbi,
+  parseEventLogs,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSmartAccountClient } from "permissionless";
@@ -32,6 +33,7 @@ import { createPimlicoClient } from "permissionless/clients/pimlico";
 import { entryPoint08Address } from "viem/account-abstraction";
 import * as dotenv from "dotenv";
 import { getNetworkConfig, getEnv } from "./lib/network";
+import { PAYMASTER_POST_OP_GAS_LIMIT, sendSponsoredTransaction } from "./lib/userOp";
 dotenv.config();
 
 const PERMISSIONLESS_IMPL = "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
@@ -106,7 +108,7 @@ async function main() {
         paymaster: PAYMASTER_ADDR,
         paymasterData: "0x" as `0x${string}`,
         paymasterVerificationGasLimit: 200_000n,
-        paymasterPostOpGasLimit: 100_000n,
+        paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS_LIMIT,
         isFinal: false,
       };
     },
@@ -115,7 +117,7 @@ async function main() {
         paymaster: PAYMASTER_ADDR,
         paymasterData: "0x" as `0x${string}`,
         paymasterVerificationGasLimit: 200_000n,
-        paymasterPostOpGasLimit: 100_000n,
+        paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS_LIMIT,
       };
     },
   };
@@ -145,19 +147,29 @@ async function main() {
   });
 
   console.log("Sending UserOp: deployRegistry via PlatformPaymaster...");
-  const txHash = await smartAccountClient.sendTransaction({
+  const txHash = await sendSponsoredTransaction(smartAccountClient, {
     to: PAYMASTER_ADDR,
     value: 0n,
     data: deployRegistryData,
   });
 
+  const txReceipt = await publicClient.getTransactionReceipt({ hash: txHash });
+  const [deployedEvent] = parseEventLogs({
+    abi: paymasterAbi,
+    logs: txReceipt.logs,
+    eventName: "RegistryDeployed",
+  });
+  const registryAddress = deployedEvent?.args.deployed;
+
   console.log("\n─────────────────────────────────────────────");
   console.log("Registry deployed gaslessly ✓");
   console.log("  tx      :", txHash);
   console.log("  Deployer:", ownerAccount.address);
+  console.log("  Registry:", registryAddress ?? "(check RegistryDeployed event on tx)");
   console.log("─────────────────────────────────────────────");
-  console.log("\nFind the deployed registry address in the RegistryDeployed event on tx:", txHash);
-  console.log(`Add to .env:  REGISTRY_ADDRESS_${suffix}=<address from event>`);
+  if (registryAddress) {
+    console.log(`\nAdd to .env:  REGISTRY_ADDRESS_${suffix}=${registryAddress}`);
+  }
 }
 
 main().catch((err) => {
