@@ -127,6 +127,16 @@ export const platformAccountFactoryAbi = [
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "deployer",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "platformAddress",
+        "type": "address"
+      },
+      {
         "internalType": "bytes32",
         "name": "salt",
         "type": "bytes32"
