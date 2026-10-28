@@ -1,4 +1,9 @@
-import { loadFixture } from "@nomicfoundation/hardhat-toolbox-viem/network-helpers";
+import {
+  impersonateAccount,
+  loadFixture,
+  setBalance,
+  time,
+} from "@nomicfoundation/hardhat-toolbox-viem/network-helpers";
 import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
 import hre from "hardhat";
@@ -13,10 +18,25 @@ import {
   padHex,
   parseAbi,
   parseEther,
+  parseEventLogs,
   stringToHex,
   toHex,
   zeroAddress,
+  zeroHash,
 } from "viem";
+
+const EXECUTE_ABI = parseAbi(["function execute(address to, uint256 value, bytes data)"]);
+const OP_SUCCEEDED = 0; // IPaymaster.PostOpMode.opSucceeded
+
+// Inverse of Helpers._packValidationData
+function unpack(validationData: bigint) {
+  const mask48 = (1n << 48n) - 1n;
+  return {
+    sigFailed: (validationData & ((1n << 160n) - 1n)) === 1n,
+    validUntil: (validationData >> 160n) & mask48,
+    validAfter: validationData >> 208n,
+  };
+}
 
 describe("PlatformPaymaster", function () {
   async function deployFixture() {
@@ -69,6 +89,19 @@ describe("PlatformPaymaster", function () {
       other,
       publicClient,
     };
+  }
+
+  // `other` deploys a registry via the paymaster → `other` holds MINTER_ROLE on it
+  async function deployRegistryAsOther(fx: Awaited<ReturnType<typeof deployFixture>>) {
+    await fx.paymaster.write.setUserWhitelist([fx.other.account.address, 1n]);
+    const hash = await fx.paymasterAsOther.write.deployRegistry([fx.impl.address, "TT", "TT"]);
+    const receipt = await fx.publicClient.waitForTransactionReceipt({ hash });
+    const [event] = parseEventLogs({
+      abi: fx.paymaster.abi,
+      logs: receipt.logs,
+      eventName: "RegistryDeployed",
+    });
+    return event.args.deployed;
   }
 
   // ─── Initialize ────────────────────────────────────────────────────────────
@@ -336,15 +369,12 @@ describe("PlatformPaymaster", function () {
 
   describe("mintDocument", function () {
     it("mints a document, authorizes beneficiary+holder+escrow, increments counter", async function () {
-      const { paymaster, paymasterAsOther, mockRegistry, other, user } =
-        await loadFixture(deployFixture);
-
-      // Authorize the registry and whitelist the caller
-      await paymaster.write.addRegistry([mockRegistry.address]);
-      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
+      const fx = await loadFixture(deployFixture);
+      const { paymaster, paymasterAsOther, other, user } = fx;
+      const registry = await deployRegistryAsOther(fx);
 
       await paymasterAsOther.write.mintDocument([
-        mockRegistry.address,
+        registry,
         user.account.address,  // beneficiary
         other.account.address, // holder
         1n,
@@ -376,64 +406,213 @@ describe("PlatformPaymaster", function () {
     });
 
     it("documentsMinted increments per caller", async function () {
-      const { paymaster, paymasterAsOther, mockRegistry, other, user } =
-        await loadFixture(deployFixture);
-      await paymaster.write.addRegistry([mockRegistry.address]);
-      await paymaster.write.setUserWhitelist([other.account.address, 1n]);
+      const fx = await loadFixture(deployFixture);
+      const { paymaster, paymasterAsOther, other, user } = fx;
+      const registry = await deployRegistryAsOther(fx);
 
       await paymasterAsOther.write.mintDocument([
-        mockRegistry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
+        registry, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
       ]);
       await paymasterAsOther.write.mintDocument([
-        mockRegistry.address, user.account.address, other.account.address, 2n, "0x" as `0x${string}`,
+        registry, user.account.address, other.account.address, 2n, "0x" as `0x${string}`,
       ]);
 
       expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(2n);
     });
 
-    it("reverts for an unauthorized caller (not whitelisted, not authorizedCaller, not owner)", async function () {
-      const { paymasterAsOther, mockRegistry, paymaster, other, user } =
-        await loadFixture(deployFixture);
-      await paymaster.write.addRegistry([mockRegistry.address]);
+    it("reverts when caller lacks MINTER_ROLE on the registry", async function () {
+      const fx = await loadFixture(deployFixture);
+      const { user, other } = fx;
+      const registry = await deployRegistryAsOther(fx);
+      const paymasterAsUser = await hre.viem.getContractAt("PlatformPaymaster", fx.paymaster.address, {
+        client: { wallet: user },
+      });
 
       await expect(
-        paymasterAsOther.write.mintDocument([
-          mockRegistry.address,
-          user.account.address,
-          other.account.address,
-          1n,
-          "0x" as `0x${string}`,
+        paymasterAsUser.write.mintDocument([
+          registry, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
         ]),
-      ).to.be.rejectedWith("caller not authorized");
+      ).to.be.rejectedWith("not registry minter");
+    });
+  });
+
+  // ─── Validation + postOp (called as the EntryPoint) ───────────────────────
+
+  describe("validatePaymasterUserOp / postOp", function () {
+    const ONE_DAY = 86400n;
+    const MAX_COST = parseEther("0.2");
+
+    async function entryPointFixture() {
+      const fx = await deployFixture();
+      const epAddr = fx.mockEntryPoint.address;
+      await impersonateAccount(epAddr);
+      await setBalance(epAddr, parseEther("10"));
+      const epWallet = await hre.viem.getWalletClient(epAddr);
+      const paymasterAsEP = await hre.viem.getContractAt("PlatformPaymaster", fx.paymaster.address, {
+        client: { wallet: epWallet },
+      });
+
+      // `other` deploys a registry → holds MINTER_ROLE; `user` is a Path A caller
+      const registry = await deployRegistryAsOther(fx);
+      await fx.paymaster.write.addAuthorizedCaller([fx.user.account.address]);
+
+      return { ...fx, paymasterAsEP, registry };
+    }
+
+    function userOp(sender: `0x${string}`, target: `0x${string}`, innerData: `0x${string}`) {
+      return {
+        sender,
+        nonce: 0n,
+        initCode: "0x" as `0x${string}`,
+        callData: encodeFunctionData({
+          abi: EXECUTE_ABI,
+          functionName: "execute",
+          args: [target, 0n, innerData],
+        }),
+        accountGasLimits: zeroHash,
+        preVerificationGas: 0n,
+        gasFees: zeroHash,
+        paymasterAndData: "0x" as `0x${string}`,
+        signature: "0x" as `0x${string}`,
+      };
+    }
+
+    // Path A: a plain call on the registry by `user`
+    function pathAOp(fx: Awaited<ReturnType<typeof entryPointFixture>>) {
+      return userOp(fx.user.account.address, fx.registry, "0x");
+    }
+
+    function mintOp(fx: Awaited<ReturnType<typeof entryPointFixture>>, sender: `0x${string}`) {
+      const inner = encodeFunctionData({
+        abi: fx.paymaster.abi,
+        functionName: "mintDocument",
+        args: [fx.registry, sender, sender, 1n, "0x"],
+      });
+      return userOp(sender, fx.paymaster.address, inner);
+    }
+
+    async function validate(
+      fx: Awaited<ReturnType<typeof entryPointFixture>>,
+      op: ReturnType<typeof userOp>,
+      maxCost = MAX_COST,
+    ) {
+      const { result } = await fx.paymasterAsEP.simulate.validatePaymasterUserOp([op, zeroHash, maxCost], {
+        account: fx.mockEntryPoint.address,
+      });
+      const [context, validationData] = result;
+      return { context, ...unpack(validationData) };
+    }
+
+    // Runs validation then postOp, like the EntryPoint does for a successful op
+    async function sponsor(
+      fx: Awaited<ReturnType<typeof entryPointFixture>>,
+      op: ReturnType<typeof userOp>,
+      actualGasCost: bigint,
+    ) {
+      const { context } = await validate(fx, op);
+      await fx.paymasterAsEP.write.postOp([OP_SUCCEEDED, context, actualGasCost, 0n]);
+    }
+
+    it("approves an op under the daily limit with no time bounds", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const v = await validate(fx, pathAOp(fx));
+      expect(v.sigFailed).to.be.false;
+      expect(v.validAfter).to.equal(0n);
+      expect(v.validUntil).to.equal(0n);
     });
 
-    it("allows the owner to mint without being whitelisted", async function () {
-      const { paymaster, mockRegistry, platform, user, other } = await loadFixture(deployFixture);
-      await paymaster.write.addRegistry([mockRegistry.address]);
-
-      // `paymaster` is connected as `platform`, the clone's owner (see deployFixture)
-      await paymaster.write.mintDocument([
-        mockRegistry.address,
-        user.account.address,
-        other.account.address,
-        1n,
-        "0x" as `0x${string}`,
-      ]);
-
-      expect(await paymaster.read.documentsMinted([platform.account.address])).to.equal(1n);
+    it("rejects an op whose maxCost alone exceeds the daily limit", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const v = await validate(fx, pathAOp(fx), parseEther("2"));
+      expect(v.sigFailed).to.be.true;
     });
 
-    it("allows an already-authorizedCaller to mint without whitelist credits", async function () {
-      const { paymaster, paymasterAsOther, mockRegistry, other, user } =
-        await loadFixture(deployFixture);
-      await paymaster.write.addRegistry([mockRegistry.address]);
-      await paymaster.write.addAuthorizedCaller([other.account.address]);
+    it("over the limit: approves with validAfter = window end", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      await sponsor(fx, pathAOp(fx), parseEther("0.9"));
 
-      await paymasterAsOther.write.mintDocument([
-        mockRegistry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
-      ]);
+      const lastReset = await fx.paymaster.read.lastReset([fx.user.account.address]);
+      const v = await validate(fx, pathAOp(fx));
+      expect(v.sigFailed).to.be.false;
+      expect(v.validAfter).to.equal(lastReset + ONE_DAY);
+      expect(v.context).to.not.equal("0x");
+    });
 
-      expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(1n);
+    it("recovers after the window: postOp resets the stale counter", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const sender = fx.user.account.address;
+      await sponsor(fx, pathAOp(fx), parseEther("0.9"));
+
+      const v = await validate(fx, pathAOp(fx));
+      // EntryPoint accepts the op from validAfter + 1 — the first allowed second
+      await time.setNextBlockTimestamp(v.validAfter + 1n);
+      await fx.paymasterAsEP.write.postOp([OP_SUCCEEDED, v.context, parseEther("0.1"), 0n]);
+
+      expect(await fx.paymaster.read.dailySpend([sender])).to.equal(parseEther("0.1"));
+      expect(await fx.paymaster.read.lastReset([sender])).to.equal(v.validAfter + 1n);
+
+      // Fresh window → next op is approved immediately
+      const next = await validate(fx, pathAOp(fx));
+      expect(next.sigFailed).to.be.false;
+      expect(next.validAfter).to.equal(0n);
+    });
+
+    it("counter keeps accumulating within the same window", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      await sponsor(fx, pathAOp(fx), parseEther("0.3"));
+      await sponsor(fx, pathAOp(fx), parseEther("0.3"));
+      expect(await fx.paymaster.read.dailySpend([fx.user.account.address])).to.equal(parseEther("0.6"));
+    });
+
+    it("mintDocument: rejects a sender without MINTER_ROLE", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const v = await validate(fx, mintOp(fx, fx.user.account.address));
+      expect(v.sigFailed).to.be.true;
+    });
+
+    it("mintDocument: rejects an unauthorized registry", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const sender = fx.other.account.address;
+      const inner = encodeFunctionData({
+        abi: fx.paymaster.abi,
+        functionName: "mintDocument",
+        args: [fx.mockRegistry.address, sender, sender, 1n, "0x"],
+      });
+      const v = await validate(fx, userOp(sender, fx.paymaster.address, inner));
+      expect(v.sigFailed).to.be.true;
+    });
+
+    it("mintDocument: the registry minter is sponsored and counted in daily spend", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const sender = fx.other.account.address;
+      await sponsor(fx, mintOp(fx, sender), parseEther("0.9"));
+      expect(await fx.paymaster.read.dailySpend([sender])).to.equal(parseEther("0.9"));
+
+      // Now over the limit → held until the window rolls over
+      const lastReset = await fx.paymaster.read.lastReset([sender]);
+      const v = await validate(fx, mintOp(fx, sender));
+      expect(v.sigFailed).to.be.false;
+      expect(v.validAfter).to.equal(lastReset + ONE_DAY);
+    });
+
+    it("deployRegistry: not limited and not counted in daily spend", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const sender = fx.other.account.address;
+      await sponsor(fx, mintOp(fx, sender), parseEther("0.9")); // push sender over the limit
+      await fx.paymaster.write.setUserWhitelist([sender, 1n]);
+
+      const inner = encodeFunctionData({
+        abi: fx.paymaster.abi,
+        functionName: "deployRegistry",
+        args: [fx.impl.address, "TT", "TT"],
+      });
+      const op = userOp(sender, fx.paymaster.address, inner);
+      const v = await validate(fx, op);
+      expect(v.sigFailed).to.be.false;
+      expect(v.validAfter).to.equal(0n);
+
+      await fx.paymasterAsEP.write.postOp([OP_SUCCEEDED, v.context, parseEther("0.5"), 0n]);
+      expect(await fx.paymaster.read.dailySpend([sender])).to.equal(parseEther("0.9"));
     });
   });
 
@@ -602,20 +781,30 @@ describe("PlatformPaymaster", function () {
       expect(result[1]).to.equal(1n);
     });
 
-    function mintData(f: Awaited<ReturnType<typeof deployFixture>>) {
+    function mintData(
+      f: Awaited<ReturnType<typeof deployFixture>>,
+      registry: `0x${string}` = f.mockRegistry.address,
+    ) {
       return encodeFunctionData({
         abi: parseAbi([
           "function mintDocument(address,address,address,uint256,bytes) external",
         ]),
         functionName: "mintDocument",
         args: [
-          f.mockRegistry.address,
+          registry,
           f.user.account.address,
           f.user.account.address,
           1n,
           "0x",
         ],
       });
+    }
+
+    // Authorized registry on which `user` holds MINTER_ROLE (validation only checks the sender's role)
+    async function userMinterRegistry(f: Awaited<ReturnType<typeof deployFixture>>) {
+      const registry = await hre.viem.deployContract("MockRegistry", [f.user.account.address]);
+      await f.paymaster.write.addRegistry([registry.address]);
+      return registry.address;
     }
 
     it("rejects mintDocument sponsorship for an unauthorized sender", async function () {
@@ -625,26 +814,24 @@ describe("PlatformPaymaster", function () {
       expect(result[1]).to.equal(1n);
     });
 
-    it("rejects mintDocument sponsorship above the daily limit", async function () {
+    it("rejects mintDocument sponsorship whose maxCost alone exceeds the daily limit", async function () {
       const f = await setup();
-      await f.paymaster.write.addRegistry([f.mockRegistry.address]);
-      await f.paymaster.write.addAuthorizedCaller([f.user.account.address]);
+      const registry = await userMinterRegistry(f);
       const { result } = await validate(
         f,
-        mintData(f),
+        mintData(f, registry),
         f.user.account.address,
         parseEther("2"), // > dailyLimit of 1 ETH
       );
       expect(result[1]).to.equal(1n);
     });
 
-    it("rejects mintDocument once accumulated dailySpend reaches the limit", async function () {
+    it("holds mintDocument until the window resets once dailySpend reaches the limit", async function () {
       const f = await setup();
-      await f.paymaster.write.addRegistry([f.mockRegistry.address]);
-      await f.paymaster.write.addAuthorizedCaller([f.user.account.address]);
+      const registry = await userMinterRegistry(f);
       const sender = f.user.account.address;
 
-      const first = await validate(f, mintData(f), sender);
+      const first = await validate(f, mintData(f, registry), sender);
       expect(first.result[1]).to.equal(0n);
       // Two sponsored mints at 0.5 ETH each exhaust the 1 ETH daily limit
       for (let i = 0; i < 2; i++) {
@@ -659,8 +846,12 @@ describe("PlatformPaymaster", function () {
           0n,
         ]);
       }
-      const { result } = await validate(f, mintData(f), sender);
-      expect(result[1]).to.equal(1n);
+      // Approved, but only valid after the window ends (EntryPoint enforces validAfter)
+      const lastReset = await f.paymaster.read.lastReset([sender]);
+      const { result } = await validate(f, mintData(f, registry), sender);
+      const v = unpack(result[1]);
+      expect(v.sigFailed).to.be.false;
+      expect(v.validAfter).to.equal(lastReset + 86400n);
     });
 
     function encodeAbiContext(sender: `0x${string}`, isDeployment: boolean) {
