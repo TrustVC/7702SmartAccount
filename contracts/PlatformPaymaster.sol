@@ -23,20 +23,23 @@ interface ITradeTrustToken {
 interface IAccessControl {
     function grantRole(bytes32 role, address account) external;
     function renounceRole(bytes32 role, address callerConfirmation) external;
+    function hasRole(bytes32 role, address account) external view returns (bool);
 }
 
 /**
  * PlatformPaymaster — validates by inspecting the target contract in callData.
  *
- * Validation strategy (no third-party storage reads → bundler compliant):
+ * Validation strategy (paymaster must be staked → bundler compliant):
  *   1. Decode userOp.callData → must be execute(address to, uint256, bytes)
  *   2. Check `to` is in authorizedRegistries (paymaster's own storage)
- *   3. Check daily spend (paymaster's own storage — always allowed)
+ *   3. mintDocument only: sender holds MINTER_ROLE on the registry
+ *      (registry storage associated with sender)
+ *   4. Check daily spend (paymaster's own storage)
  *
  * Access control is enforced by the Storage contract itself:
  *   require(msg.sender == beneficiary || msg.sender == holder)
  * so non-beneficiary/holder callers are rejected at execution time.
- * If the call reverts, _postOp skips the spend update.
+ * Reverted ops are still charged to dailySpend in _postOp (gas was paid).
  */
 contract PlatformPaymaster is BasePaymaster {
     bytes4 private constant EXECUTE_SEL =
@@ -70,6 +73,10 @@ contract PlatformPaymaster is BasePaymaster {
     mapping(address => uint256) public lastReset;
     uint256 public dailyLimit;
 
+    // Set once by initialize() (or the constructor for the implementation).
+    // Kept separate from owner() so renounceOwnership() cannot re-open initialize().
+    bool private _initialized;
+
     event RegistryAdded(address indexed registry);
     event RegistryRemoved(address indexed registry);
     event TitleEscrowLinked(
@@ -89,19 +96,22 @@ contract PlatformPaymaster is BasePaymaster {
     event UserOpRejected(address indexed user, string reason);
     event DailyLimitUpdated(uint256 newLimit);
 
-    // Deployed once as the shared implementation; BasePaymaster sets owner = msg.sender.
-    // That non-zero owner prevents initialize() from running on the implementation itself.
-    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {}
+    // Deployed once as the shared implementation; lock it so initialize() can never run on it.
+    constructor(IEntryPoint _entryPoint) BasePaymaster(_entryPoint) {
+        _initialized = true;
+    }
 
     // Called by the factory immediately after cloneDeterministic().
-    // A fresh clone has all-zero storage, so owner() == address(0) exactly once.
+    // Initialization state is tracked separately from ownership, so renounceOwnership()
+    // cannot make an initialized clone look fresh and re-open initialize().
     function initialize(
         address _owner,
         uint256 _dailyLimit,
         address _tdocDeployer
     ) external {
-        require(owner() == address(0), "Already initialized");
+        require(!_initialized, "Already initialized");
         require(_owner != address(0), "Zero owner");
+        _initialized = true;
         _transferOwnership(_owner);
         dailyLimit = _dailyLimit;
         tdocDeployer = ITDocDeployer(_tdocDeployer);
@@ -161,7 +171,7 @@ contract PlatformPaymaster is BasePaymaster {
 
     // Mints a TradeTrust document, captures the TitleEscrow, and auto-authorizes it.
     // Paymaster must hold MINTER_ROLE on the registry.
-    // Callable gaslessly by userWhitelist users (credits not consumed — only deployRegistry uses credits).
+    // Caller must hold MINTER_ROLE on the registry (the deployer, or whoever they granted it to).
     function mintDocument(
         address registry,
         address beneficiary,
@@ -170,6 +180,11 @@ contract PlatformPaymaster is BasePaymaster {
         bytes calldata remark
     ) external returns (address titleEscrow) {
         require(authorizedRegistries[registry], "registry not authorized");
+        // The registry only sees the paymaster as minter, so check the real caller here
+        require(
+            IAccessControl(registry).hasRole(MINTER_ROLE, msg.sender),
+            "not registry minter"
+        );
 
         titleEscrow = ITradeTrustToken(registry).mint(
             beneficiary,
@@ -258,20 +273,17 @@ contract PlatformPaymaster is BasePaymaster {
                 emit UserOpRejected(sender, "caller not authorized");
                 return ("", _packValidationData(true, 0, 0));
             }
-            if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
-                emit UserOpRejected(sender, "daily limit exceeded");
-                return ("", _packValidationData(true, 0, 0));
-            }
-            return (
-                abi.encode(sender, maxCost, false),
-                _packValidationData(false, 0, 0)
-            );
+            return _sponsorWithinDailyLimit(sender, maxCost);
         }
 
         // Path B — gasless paymaster call (deployRegistry or mintDocument)
         // Double-spend safe: EntryPoint sequential nonces allow only one
         // pending UserOp per sender in the mempool at a time.
         if (target == address(this)) {
+            if (innerData.length < 4) {
+                emit UserOpRejected(sender, "inner callData too short");
+                return ("", _packValidationData(true, 0, 0));
+            }
             bytes4 innerSel;
             assembly {
                 innerSel := mload(add(innerData, 32))
@@ -283,7 +295,15 @@ contract PlatformPaymaster is BasePaymaster {
                     emit UserOpRejected(sender, "not whitelisted");
                     return ("", _packValidationData(true, 0, 0));
                 }
-                // credits consumed inside deployRegistry; flag as deployment to skip daily spend
+                if (address(tdocDeployer) == address(0)) {
+                    emit UserOpRejected(sender, "TdocDeployer not set");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                // Reverts on malformed ABI args, so only well-formed
+                // deployRegistry(address,string,string) payloads are sponsored.
+                _decodeDeployArgs(innerData);
+                // credits consumed inside deployRegistry; flag as deployment to skip daily spend.
+                // _postOp falls back to normal accounting if execution reverts.
                 return (
                     abi.encode(sender, maxCost, true),
                     _packValidationData(false, 0, 0)
@@ -291,11 +311,25 @@ contract PlatformPaymaster is BasePaymaster {
             }
 
             if (innerSel == MINT_DOCUMENT_SEL) {
-                // mintDocument: registry enforces MINTER_ROLE — no extra whitelist needed
-                return (
-                    abi.encode(sender, maxCost, false),
-                    _packValidationData(false, 0, 0)
-                );
+                // Mirror mintDocument's checks so non-minters can't get failing ops sponsored.
+                // hasRole reads _roles[role][sender] — storage associated with sender (ERC-7562).
+                if (innerData.length < 36) {
+                    emit UserOpRejected(sender, "mint calldata too short");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                address registry;
+                assembly {
+                    registry := mload(add(innerData, 36))
+                }
+                if (!authorizedRegistries[registry]) {
+                    emit UserOpRejected(sender, "registry not authorized");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                if (!IAccessControl(registry).hasRole(MINTER_ROLE, sender)) {
+                    emit UserOpRejected(sender, "not registry minter");
+                    return ("", _packValidationData(true, 0, 0));
+                }
+                return _sponsorWithinDailyLimit(sender, maxCost);
             }
 
             emit UserOpRejected(sender, "unauthorized paymaster call");
@@ -304,6 +338,33 @@ contract PlatformPaymaster is BasePaymaster {
 
         emit UserOpRejected(sender, "unauthorized target");
         return ("", _packValidationData(true, 0, 0));
+    }
+
+    // Approves a daily-limit-tracked op. If the sender is over today's limit, the op
+    // is approved with validAfter = window end, so it only runs after the window rolls
+    // over and _postOp resets the counter. block.timestamp is banned in validation
+    // (ERC-7562), so the EntryPoint enforces the time via validAfter.
+    function _sponsorWithinDailyLimit(
+        address sender,
+        uint256 maxCost
+    ) internal returns (bytes memory context, uint256 validationData) {
+        context = abi.encode(sender, maxCost, false);
+
+        if (dailyLimit > 0 && dailySpend[sender] + maxCost > dailyLimit) {
+            // Even a fresh window can't fit this op
+            if (maxCost > dailyLimit) {
+                emit UserOpRejected(sender, "maxCost exceeds daily limit");
+                return ("", _packValidationData(true, 0, 0));
+            }
+            // EntryPoint runs the op only when block.timestamp > validAfter, which is
+            // exactly when _postOp's reset condition becomes true
+            return (
+                context,
+                _packValidationData(false, 0, uint48(lastReset[sender] + 1 days))
+            );
+        }
+
+        return (context, _packValidationData(false, 0, 0));
     }
 
     function _postOp(
@@ -319,16 +380,36 @@ contract PlatformPaymaster is BasePaymaster {
             (address, uint256, bool)
         );
 
-        // Deployment ops are credit-gated; skip daily spend tracking for them
-        if (!isDeployment) {
+        // Successful deployments are credit-gated; skip daily spend tracking for them.
+        // A reverted deployment rolls back the credit decrement inside deployRegistry,
+        // so charge it like a normal op and burn the credit here instead — otherwise a
+        // sender could replay failing deployments to drain the deposit for free.
+        if (!isDeployment || mode != PostOpMode.opSucceeded) {
             if (block.timestamp > lastReset[sender] + 1 days) {
                 dailySpend[sender] = 0;
                 lastReset[sender] = block.timestamp;
             }
             dailySpend[sender] += actualGasCost;
         }
+        if (isDeployment && mode == PostOpMode.opReverted) {
+            uint256 credits = userWhitelist[sender];
+            if (credits > 0) {
+                userWhitelist[sender] = credits - 1;
+                emit UserWhitelistUpdated(sender, credits - 1);
+            }
+        }
 
         emit UserOpSponsored(sender, actualGasCost);
+    }
+
+    // Strips the 4-byte selector and ABI-decodes deployRegistry's arguments.
+    function _decodeDeployArgs(bytes memory innerData) private pure {
+        uint256 argsLength = innerData.length - 4;
+        bytes memory args = new bytes(argsLength);
+        assembly ("memory-safe") {
+            mcopy(add(args, 32), add(innerData, 36), argsLength)
+        }
+        abi.decode(args, (address, string, string));
     }
 
     // v0.8 contracts on Etherspot EntryPoint — skip interface mismatch check

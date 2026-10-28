@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Commit Lint Dependencies
-        run: npm install @commitlint/config-conventional
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+      - run: npm ci --ignore-scripts
       - uses: JulienKode/pull-request-name-linter-action@v0.5.0

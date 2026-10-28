@@ -225,9 +225,41 @@ describe("PlatformAccountFactory", function () {
     });
 
     it("computePaymasterAddress predicts the deployed address", async function () {
-      const { factory, platform } = await loadFixture(deployFixture);
+      const { factory, platform, owner } = await loadFixture(deployFixture);
       const salt = `0x${"cc".repeat(32)}` as `0x${string}`;
-      const predicted = await factory.read.computePaymasterAddress([salt]);
+      const predicted = await factory.read.computePaymasterAddress([
+        owner.account.address,
+        platform.account.address,
+        salt,
+      ]);
+      const cloneAddr = await deployClone(factory, platform, salt);
+      expect(cloneAddr.toLowerCase()).to.equal(predicted.toLowerCase());
+    });
+
+    it("another caller cannot occupy the address predicted for the deployer", async function () {
+      const { factory, platform, owner, other } = await loadFixture(deployFixture);
+      const salt = `0x${"ee".repeat(32)}` as `0x${string}`;
+      const predicted = await factory.read.computePaymasterAddress([
+        owner.account.address,
+        platform.account.address,
+        salt,
+      ]);
+
+      const factoryAsOther = await hre.viem.getContractAt(
+        "PlatformAccountFactory",
+        factory.address,
+        { client: { wallet: other } },
+      );
+      await factoryAsOther.write.deployPlatformPaymaster([
+        platform.account.address,
+        0n,
+        salt,
+      ]);
+      const squattedEvents = await factory.getEvents.PlatformOnboarded();
+      const squatted = squattedEvents[squattedEvents.length - 1].args
+        .paymaster as string;
+      expect(squatted.toLowerCase()).to.not.equal(predicted.toLowerCase());
+
       const cloneAddr = await deployClone(factory, platform, salt);
       expect(cloneAddr.toLowerCase()).to.equal(predicted.toLowerCase());
     });

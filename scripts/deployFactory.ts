@@ -16,7 +16,7 @@ import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import hre from "hardhat";
 import * as dotenv from "dotenv";
-import { getNetworkConfig, getEnv } from "./lib/network";
+import { getNetworkConfig, getEnv, getFeeOverrides } from "./lib/network";
 dotenv.config();
 
 async function main() {
@@ -44,6 +44,7 @@ async function main() {
     abi: artifact.abi,
     bytecode: artifact.bytecode as `0x${string}`,
     args: [tdocDeployer, paymasterImpl],
+    ...getFeeOverrides(hre.network.name),
   });
   console.log("  tx:", txHash);
 
