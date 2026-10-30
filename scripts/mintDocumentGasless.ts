@@ -4,7 +4,7 @@
 //   1. EOA is delegated (type-4 tx) to permissionless impl if not already
 //   2. UserOp calls: execute(PAYMASTER, 0, mintDocument(registry, beneficiary, holder, tokenId, remark))
 //   3. PlatformPaymaster sponsors gas — registry must be in authorizedRegistries
-//   4. Beneficiary + holder are auto-added to authorizedCallers; TitleEscrow to authorizedTitleEscrows
+//   4. TitleEscrow is added to authorizedTitleEscrows; its live holder/beneficiary are then sponsored
 //
 // Run: npx ts-node scripts/mintDocumentGasless.ts
 //

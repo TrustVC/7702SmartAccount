@@ -26,19 +26,26 @@ interface IAccessControl {
     function hasRole(bytes32 role, address account) external view returns (bool);
 }
 
+interface ITitleEscrow {
+    function holder() external view returns (address);
+    function beneficiary() external view returns (address);
+}
+
 /**
  * PlatformPaymaster — validates by inspecting the target contract in callData.
  *
  * Validation strategy (paymaster must be staked → bundler compliant):
  *   1. Decode userOp.callData → must be execute(address to, uint256, bytes)
- *   2. Check `to` is in authorizedRegistries (paymaster's own storage)
- *   3. mintDocument only: sender holds MINTER_ROLE on the registry
- *      (registry storage associated with sender)
- *   4. Check daily spend (paymaster's own storage)
+ *   2. Check `to` is in authorizedRegistries / authorizedTitleEscrows (paymaster's own storage)
+ *   3. Title escrow: sender is the escrow's *current* holder or beneficiary
+ *      (read live from the escrow — requires the paymaster to be staked, ERC-7562 STO-033)
+ *   4. Registry: sender holds any registry role (admin/minter/restorer/accepter) or is an
+ *      owner-added authorizedCaller (registry storage associated with sender)
+ *   5. mintDocument only: sender holds MINTER_ROLE on the registry
+ *   6. Check daily spend (paymaster's own storage)
  *
- * Access control is enforced by the Storage contract itself:
- *   require(msg.sender == beneficiary || msg.sender == holder)
- * so non-beneficiary/holder callers are rejected at execution time.
+ * Escrow sponsorship follows the document: after a holder/beneficiary transfer the
+ * previous party is no longer sponsored and the new one is, with no owner action.
  * Reverted ops are still charged to dailySpend in _postOp (gas was paid).
  */
 contract PlatformPaymaster is BasePaymaster {
@@ -63,7 +70,7 @@ contract PlatformPaymaster is BasePaymaster {
     mapping(address => bool) public authorizedTitleEscrows;
     // remaining deployment credits per user; max 3 per user
     mapping(address => uint256) public userWhitelist;
-    // Addresses permitted to call title escrow functions via this paymaster
+    // Owner-managed addresses permitted to call authorized registries via this paymaster
     mapping(address => bool) public authorizedCallers;
     // Count of documents minted per user
     mapping(address => uint256) public documentsMinted;
@@ -170,8 +177,10 @@ contract PlatformPaymaster is BasePaymaster {
     }
 
     // Mints a TradeTrust document, captures the TitleEscrow, and auto-authorizes it.
-    // Paymaster must hold MINTER_ROLE on the registry.
-    // Caller must hold MINTER_ROLE on the registry (the deployer, or whoever they granted it to).
+    // Paymaster must hold MINTER_ROLE on the registry, and so must the caller
+    // (the deployer, or whoever they granted it to).
+    // Beneficiary/holder are not granted anything here: escrow sponsorship is checked
+    // against the escrow's live holder/beneficiary at validation time.
     function mintDocument(
         address registry,
         address beneficiary,
@@ -185,6 +194,8 @@ contract PlatformPaymaster is BasePaymaster {
             IAccessControl(registry).hasRole(MINTER_ROLE, msg.sender),
             "not registry minter"
         );
+        require(beneficiary != address(0), "invalid beneficiary");
+        require(holder != address(0), "invalid holder");
 
         titleEscrow = ITradeTrustToken(registry).mint(
             beneficiary,
@@ -192,10 +203,8 @@ contract PlatformPaymaster is BasePaymaster {
             tokenId,
             remark
         );
-
-        // Auto-authorize beneficiary and holder to call title escrow functions
-        authorizedCallers[beneficiary] = true;
-        authorizedCallers[holder] = true;
+        // Don't rely on the registry: only authorize a deployed escrow (also rules out address(0))
+        require(titleEscrow.code.length > 0, "invalid title escrow");
 
         authorizedTitleEscrows[titleEscrow] = true;
         documentsMinted[msg.sender]++;
@@ -266,10 +275,25 @@ contract PlatformPaymaster is BasePaymaster {
             (address, uint256, bytes)
         );
 
-        // Path A — calling an authorized registry or title escrow (regular sponsored op)
-        // Only authorizedCallers or the platform owner may be sponsored here.
-        if (authorizedRegistries[target] || authorizedTitleEscrows[target]) {
-            if (!authorizedCallers[sender] && sender != owner()) {
+        // Path A1 — calling an authorized title escrow.
+        // Only its current holder/beneficiary (or the platform owner) is sponsored,
+        // so a party that has transferred the document away can't keep using it.
+        if (authorizedTitleEscrows[target]) {
+            if (sender != owner() && !_isEscrowParty(target, sender)) {
+                emit UserOpRejected(sender, "not escrow holder/beneficiary");
+                return ("", _packValidationData(true, 0, 0));
+            }
+            return _sponsorWithinDailyLimit(sender, maxCost);
+        }
+
+        // Path A2 — calling an authorized registry.
+        // Any registry role holder, owner-added callers, or the platform owner.
+        if (authorizedRegistries[target]) {
+            if (
+                sender != owner() &&
+                !authorizedCallers[sender] &&
+                !_hasRegistryRole(target, sender)
+            ) {
                 emit UserOpRejected(sender, "caller not authorized");
                 return ("", _packValidationData(true, 0, 0));
             }
@@ -313,13 +337,22 @@ contract PlatformPaymaster is BasePaymaster {
             if (innerSel == MINT_DOCUMENT_SEL) {
                 // Mirror mintDocument's checks so non-minters can't get failing ops sponsored.
                 // hasRole reads _roles[role][sender] — storage associated with sender (ERC-7562).
-                if (innerData.length < 36) {
+                // selector + registry + beneficiary + holder
+                if (innerData.length < 100) {
                     emit UserOpRejected(sender, "mint calldata too short");
                     return ("", _packValidationData(true, 0, 0));
                 }
                 address registry;
+                address beneficiary;
+                address holder;
                 assembly {
                     registry := mload(add(innerData, 36))
+                    beneficiary := mload(add(innerData, 68))
+                    holder := mload(add(innerData, 100))
+                }
+                if (beneficiary == address(0) || holder == address(0)) {
+                    emit UserOpRejected(sender, "invalid beneficiary/holder");
+                    return ("", _packValidationData(true, 0, 0));
                 }
                 if (!authorizedRegistries[registry]) {
                     emit UserOpRejected(sender, "registry not authorized");
@@ -400,6 +433,42 @@ contract PlatformPaymaster is BasePaymaster {
         }
 
         emit UserOpSponsored(sender, actualGasCost);
+    }
+
+    // True if `account` is the escrow's current holder or beneficiary.
+    // An escrow that doesn't answer (e.g. a bad owner-added address) is treated as no match.
+    function _isEscrowParty(
+        address escrow,
+        address account
+    ) private view returns (bool) {
+        return
+            _readAddress(escrow, ITitleEscrow.holder.selector) == account ||
+            _readAddress(escrow, ITitleEscrow.beneficiary.selector) == account;
+    }
+
+    // Low-level so a target without code (or a reverting one) returns address(0)
+    // instead of reverting on ABI decode, which try/catch can't intercept.
+    function _readAddress(
+        address target,
+        bytes4 selector
+    ) private view returns (address result) {
+        (bool ok, bytes memory ret) = target.staticcall(
+            abi.encodeWithSelector(selector)
+        );
+        if (ok && ret.length >= 32) result = abi.decode(ret, (address));
+    }
+
+    // hasRole reads _roles[role][account] — storage associated with the sender (ERC-7562).
+    function _hasRegistryRole(
+        address registry,
+        address account
+    ) private view returns (bool) {
+        IAccessControl r = IAccessControl(registry);
+        return
+            r.hasRole(DEFAULT_ADMIN_ROLE, account) ||
+            r.hasRole(MINTER_ROLE, account) ||
+            r.hasRole(RESTORER_ROLE, account) ||
+            r.hasRole(ACCEPTER_ROLE, account);
     }
 
     // Strips the 4-byte selector and ABI-decodes deployRegistry's arguments.

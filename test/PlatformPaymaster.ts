@@ -368,7 +368,7 @@ describe("PlatformPaymaster", function () {
   // ─── mintDocument ─────────────────────────────────────────────────────────
 
   describe("mintDocument", function () {
-    it("mints a document, authorizes beneficiary+holder+escrow, increments counter", async function () {
+    it("mints a document, authorizes the escrow (not beneficiary/holder globally), increments counter", async function () {
       const fx = await loadFixture(deployFixture);
       const { paymaster, paymasterAsOther, other, user } = fx;
       const registry = await deployRegistryAsOther(fx);
@@ -382,8 +382,9 @@ describe("PlatformPaymaster", function () {
       ]);
 
       expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(1n);
-      expect(await paymaster.read.authorizedCallers([user.account.address])).to.be.true;
-      expect(await paymaster.read.authorizedCallers([other.account.address])).to.be.true;
+      // Escrow sponsorship is checked against the live escrow, so no global grant
+      expect(await paymaster.read.authorizedCallers([user.account.address])).to.be.false;
+      expect(await paymaster.read.authorizedCallers([other.account.address])).to.be.false;
 
       // TitleEscrowLinked event tells us the escrow address
       const events = await paymaster.getEvents.TitleEscrowLinked();
@@ -433,6 +434,39 @@ describe("PlatformPaymaster", function () {
           registry, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
         ]),
       ).to.be.rejectedWith("not registry minter");
+    });
+
+    it("reverts for a zero beneficiary or holder", async function () {
+      const fx = await loadFixture(deployFixture);
+      const { paymasterAsOther, user } = fx;
+      const registry = await deployRegistryAsOther(fx);
+
+      await expect(
+        paymasterAsOther.write.mintDocument([
+          registry, zeroAddress, user.account.address, 1n, "0x" as `0x${string}`,
+        ]),
+      ).to.be.rejectedWith("invalid beneficiary");
+      await expect(
+        paymasterAsOther.write.mintDocument([
+          registry, user.account.address, zeroAddress, 1n, "0x" as `0x${string}`,
+        ]),
+      ).to.be.rejectedWith("invalid holder");
+    });
+
+    it("reverts when the registry returns a zero or codeless title escrow", async function () {
+      const fx = await loadFixture(deployFixture);
+      const { paymaster, paymasterAsOther, user, other } = fx;
+      const registry = await hre.viem.getContractAt("MockRegistry", await deployRegistryAsOther(fx));
+
+      for (const escrow of [zeroAddress, user.account.address]) {
+        await registry.write.setMintResult([escrow]);
+        await expect(
+          paymasterAsOther.write.mintDocument([
+            registry.address, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
+          ]),
+        ).to.be.rejectedWith("invalid title escrow");
+        expect(await paymaster.read.authorizedTitleEscrows([escrow])).to.be.false;
+      }
     });
   });
 
@@ -582,6 +616,23 @@ describe("PlatformPaymaster", function () {
       expect(v.sigFailed).to.be.true;
     });
 
+    it("mintDocument: rejects a zero beneficiary or holder", async function () {
+      const fx = await loadFixture(entryPointFixture);
+      const sender = fx.other.account.address;
+      for (const [beneficiary, holder] of [
+        [zeroAddress, sender],
+        [sender, zeroAddress],
+      ] as const) {
+        const inner = encodeFunctionData({
+          abi: fx.paymaster.abi,
+          functionName: "mintDocument",
+          args: [fx.registry, beneficiary, holder, 1n, "0x"],
+        });
+        const v = await validate(fx, userOp(sender, fx.paymaster.address, inner));
+        expect(v.sigFailed).to.be.true;
+      }
+    });
+
     it("mintDocument: the registry minter is sponsored and counted in daily spend", async function () {
       const fx = await loadFixture(entryPointFixture);
       const sender = fx.other.account.address;
@@ -593,6 +644,113 @@ describe("PlatformPaymaster", function () {
       const v = await validate(fx, mintOp(fx, sender));
       expect(v.sigFailed).to.be.false;
       expect(v.validAfter).to.equal(lastReset + ONE_DAY);
+    });
+
+    // Mints via `other` (the registry minter); returns the new escrow address
+    async function mintEscrow(
+      fx: Awaited<ReturnType<typeof entryPointFixture>>,
+      beneficiary: `0x${string}`,
+      holder: `0x${string}`,
+      tokenId = 1n,
+    ) {
+      const hash = await fx.paymasterAsOther.write.mintDocument([
+        fx.registry, beneficiary, holder, tokenId, "0x",
+      ]);
+      const receipt = await fx.publicClient.waitForTransactionReceipt({ hash });
+      const [event] = parseEventLogs({
+        abi: fx.paymaster.abi,
+        logs: receipt.logs,
+        eventName: "TitleEscrowLinked",
+      });
+      return event.args.titleEscrow;
+    }
+
+    describe("title escrow targets", function () {
+      it("sponsors the escrow's current holder and beneficiary", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const [, , , , beneficiary, holder] = await hre.viem.getWalletClients();
+        const escrow = await mintEscrow(fx, beneficiary.account.address, holder.account.address);
+
+        expect((await validate(fx, userOp(holder.account.address, escrow, "0x"))).sigFailed).to.be.false;
+        expect((await validate(fx, userOp(beneficiary.account.address, escrow, "0x"))).sigFailed).to.be.false;
+      });
+
+      it("sponsors the platform owner", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const escrow = await mintEscrow(fx, fx.other.account.address, fx.other.account.address);
+        const v = await validate(fx, userOp(fx.platform.account.address, escrow, "0x"));
+        expect(v.sigFailed).to.be.false;
+      });
+
+      it("rejects a party of a different document", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const [, , , , attacker, victim] = await hre.viem.getWalletClients();
+        // attacker is beneficiary+holder of their own document…
+        await mintEscrow(fx, attacker.account.address, attacker.account.address, 1n);
+        // …but has no role on the victim's document
+        const victimEscrow = await mintEscrow(fx, victim.account.address, victim.account.address, 2n);
+
+        const v = await validate(fx, userOp(attacker.account.address, victimEscrow, "0x"));
+        expect(v.sigFailed).to.be.true;
+      });
+
+      it("rejects an owner-added authorizedCaller who isn't a party to the escrow", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        // `user` is in authorizedCallers (entryPointFixture) but not on this document
+        const escrow = await mintEscrow(fx, fx.other.account.address, fx.other.account.address);
+        const v = await validate(fx, userOp(fx.user.account.address, escrow, "0x"));
+        expect(v.sigFailed).to.be.true;
+      });
+
+      it("after a holder transfer: previous holder rejected, new holder sponsored", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const [, , , , beneficiary, holderA, holderB] = await hre.viem.getWalletClients();
+        const escrow = await mintEscrow(fx, beneficiary.account.address, holderA.account.address);
+
+        const escrowAsA = await hre.viem.getContractAt("MockTitleEscrow", escrow, {
+          client: { wallet: holderA },
+        });
+        await escrowAsA.write.transferHolder([holderB.account.address]);
+
+        expect((await validate(fx, userOp(holderA.account.address, escrow, "0x"))).sigFailed).to.be.true;
+        expect((await validate(fx, userOp(holderB.account.address, escrow, "0x"))).sigFailed).to.be.false;
+      });
+
+      it("rejects (without reverting) when the escrow address has no code", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const [, , , , , , , notAContract] = await hre.viem.getWalletClients();
+        await fx.paymaster.write.addTitleEscrow([notAContract.account.address]);
+        const v = await validate(fx, userOp(fx.user.account.address, notAContract.account.address, "0x"));
+        expect(v.sigFailed).to.be.true;
+      });
+    });
+
+    describe("registry targets", function () {
+      it("sponsors a registry role holder who isn't in authorizedCallers", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        expect(await fx.paymaster.read.authorizedCallers([fx.other.account.address])).to.be.false;
+        const v = await validate(fx, userOp(fx.other.account.address, fx.registry, "0x"));
+        expect(v.sigFailed).to.be.false;
+      });
+
+      it("sponsors an address holding only DEFAULT_ADMIN_ROLE", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const [, , , , adminOnly] = await hre.viem.getWalletClients();
+        const registry = await hre.viem.getContractAt("MockRegistry", fx.registry, {
+          client: { wallet: fx.other },
+        });
+        await registry.write.grantRole([zeroHash, adminOnly.account.address]);
+        const v = await validate(fx, userOp(adminOnly.account.address, fx.registry, "0x"));
+        expect(v.sigFailed).to.be.false;
+      });
+
+      it("rejects a minted document's beneficiary/holder (no global grant)", async function () {
+        const fx = await loadFixture(entryPointFixture);
+        const [, , , , party] = await hre.viem.getWalletClients();
+        await mintEscrow(fx, party.account.address, party.account.address);
+        const v = await validate(fx, userOp(party.account.address, fx.registry, "0x"));
+        expect(v.sigFailed).to.be.true;
+      });
     });
 
     it("deployRegistry: not limited and not counted in daily spend", async function () {
