@@ -144,8 +144,10 @@ contract PlatformPaymaster is BasePaymaster {
 
     // Deploys a TDoc clone on behalf of a whitelisted user; consumes one credit.
     // Role setup (atomic, no follow-up txs needed):
-    //   - msg.sender (EOA) gets DEFAULT_ADMIN_ROLE
-    //   - paymaster gets MINTER_ROLE + RESTORER_ROLE + ACCEPTER_ROLE
+    //   - msg.sender (EOA) gets DEFAULT_ADMIN_ROLE + MINTER_ROLE + RESTORER_ROLE + ACCEPTER_ROLE
+    //     (MINTER_ROLE is checked by mintDocument; restore/accept are called on the registry directly)
+    //   - paymaster keeps MINTER_ROLE + RESTORER_ROLE + ACCEPTER_ROLE from initialization
+    //     and renounces DEFAULT_ADMIN_ROLE
     function deployRegistry(
         address implementation,
         string memory name,
@@ -160,6 +162,8 @@ contract PlatformPaymaster is BasePaymaster {
         // Paymaster is temporary admin so it can configure roles after deploy
         bytes memory params = abi.encode(name, symbol, address(this));
         deployed = tdocDeployer.deploy(implementation, params);
+        // Don't rely on the deployer: only configure/authorize a deployed contract (also rules out address(0))
+        require(deployed.code.length > 0, "invalid registry");
 
         IAccessControl(deployed).grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         IAccessControl(deployed).grantRole(RESTORER_ROLE, msg.sender);
