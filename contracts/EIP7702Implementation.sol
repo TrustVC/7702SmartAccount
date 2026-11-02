@@ -7,6 +7,7 @@ import {SignerEIP7702} from "@openzeppelin/contracts/utils/cryptography/signers/
 import {EIP7702Utils} from "@openzeppelin/contracts/account/utils/EIP7702Utils.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {IERC7821} from "@openzeppelin/contracts/interfaces/draft-IERC7821.sol";
 
 /**
  * EIP-7702 smart account implementation using OpenZeppelin base contracts.
@@ -76,11 +77,11 @@ contract EIP7702Implementation is Account, SignerEIP7702, ERC7821, ERC165 {
 
     /**
      * @dev Advertise ERC-7821 (batch executor) and ERC-165 support.
-     * The ERC-7821 interface ID 0x4e49c5c7 is the XOR of:
+     * The ERC-7821 interface ID (0x39922547) is derived from the imported interface:
      *   execute(bytes32,bytes).selector ^ supportsExecutionMode(bytes32).selector
      */
     function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
-        return interfaceId == 0x4e49c5c7 // ERC-7821 batch executor
+        return interfaceId == type(IERC7821).interfaceId // ERC-7821 batch executor
             || super.supportsInterface(interfaceId); // covers 0x01ffc9a7 (ERC-165)
     }
 
