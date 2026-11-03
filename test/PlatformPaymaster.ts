@@ -117,6 +117,18 @@ describe("PlatformPaymaster", function () {
       expect(await paymaster.read.owner()).to.equal(zeroAddress);
     });
 
+    it("rejects an EntryPoint that does not implement IEntryPoint", async function () {
+      const { mockTdocDeployer, other } = await loadFixture(deployFixture);
+      // Contract without supportsInterface
+      await expect(
+        hre.viem.deployContract("PlatformPaymaster", [mockTdocDeployer.address]),
+      ).to.be.rejected;
+      // Address with no code
+      await expect(
+        hre.viem.deployContract("PlatformPaymaster", [other.account.address]),
+      ).to.be.rejected;
+    });
+
     it("sets owner, dailyLimit, tdocDeployer correctly", async function () {
       const { paymaster, platform, mockTdocDeployer } = await loadFixture(deployFixture);
       expect(await paymaster.read.owner()).to.equal(getAddress(platform.account.address));
@@ -419,6 +431,35 @@ describe("PlatformPaymaster", function () {
       ]);
 
       expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(2n);
+    });
+
+    it("blocks a registry that re-enters mintDocument or deployRegistry during mint", async function () {
+      const fx = await loadFixture(deployFixture);
+      const { paymaster, paymasterAsOther, other, user } = fx;
+      const registry = await deployRegistryAsOther(fx);
+      const registryMock = await hre.viem.getContractAt("MockRegistry", registry);
+
+      const reentries = [
+        encodeFunctionData({
+          abi: paymaster.abi,
+          functionName: "mintDocument",
+          args: [registry, user.account.address, other.account.address, 2n, "0x"],
+        }),
+        encodeFunctionData({
+          abi: paymaster.abi,
+          functionName: "deployRegistry",
+          args: [fx.impl.address, "TT", "TT"],
+        }),
+      ];
+      for (const data of reentries) {
+        await registryMock.write.setReenter([data]);
+        await expect(
+          paymasterAsOther.write.mintDocument([
+            registry, user.account.address, other.account.address, 1n, "0x" as `0x${string}`,
+          ]),
+        ).to.be.rejectedWith("ReentrancyGuardReentrantCall");
+      }
+      expect(await paymaster.read.documentsMinted([other.account.address])).to.equal(0n);
     });
 
     it("reverts when caller lacks MINTER_ROLE on the registry", async function () {
