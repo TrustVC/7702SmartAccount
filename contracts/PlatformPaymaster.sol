@@ -459,7 +459,11 @@ contract PlatformPaymaster is BasePaymaster {
         (bool ok, bytes memory ret) = target.staticcall(
             abi.encodeWithSelector(selector)
         );
-        if (ok && ret.length >= 32) result = abi.decode(ret, (address));
+        if (ok && ret.length >= 32) {
+            // Decode as uint256: abi.decode to address reverts on dirty high bits
+            uint256 word = abi.decode(ret, (uint256));
+            if (word <= type(uint160).max) result = address(uint160(word));
+        }
     }
 
     // hasRole reads _roles[role][account] — storage associated with the sender (ERC-7562).
