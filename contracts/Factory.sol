@@ -21,15 +21,10 @@ contract PlatformAccountFactory is Ownable {
         address _tdocDeployer,
         address _paymasterImplementation
     ) Ownable(msg.sender) {
+        require(_tdocDeployer != address(0), "Zero address");
+        require(_paymasterImplementation != address(0), "Zero address");
         tdocDeployer = _tdocDeployer;
         paymasterImplementation = _paymasterImplementation;
-    }
-
-    function setAttachedPaymaster(
-        address platformAddress
-    ) external view returns (address) {
-        address paymaster = attachedPaymaster[platformAddress];
-        return paymaster;
     }
 
     function updateTdocDeployer(address _tdocDeployer) external onlyOwner {
@@ -49,24 +44,48 @@ contract PlatformAccountFactory is Ownable {
         uint256 dailyLimit,
         bytes32 salt
     ) external returns (address paymaster) {
-        paymaster = Clones.cloneDeterministic(paymasterImplementation, salt);
+        // Bind the CREATE2 salt to the caller and platform so a third party who
+        // only knows `salt` cannot deploy at the address this caller would get.
+        paymaster = Clones.cloneDeterministic(
+            paymasterImplementation,
+            _paymasterSalt(msg.sender, platformAddress, salt)
+        );
         PlatformPaymaster(payable(paymaster)).initialize(
             platformAddress,
             dailyLimit,
             tdocDeployer
         );
+        attachedPaymaster[platformAddress] = paymaster;
         emit PlatformOnboarded(platformAddress, paymaster);
     }
 
-    // Address is determined solely by implementation + salt (not by constructor args).
+    // Returns the paymaster currently attached to a platform (address(0) if none).
+    function getAttachedPaymaster(
+        address platformAddress
+    ) external view returns (address) {
+        return attachedPaymaster[platformAddress];
+    }
+
+    // Predict the clone address for a specific deployer and platform.
+    // `deployer` must be the account that will call deployPlatformPaymaster.
     function computePaymasterAddress(
+        address deployer,
+        address platformAddress,
         bytes32 salt
     ) external view returns (address) {
         return
             Clones.predictDeterministicAddress(
                 paymasterImplementation,
-                salt,
+                _paymasterSalt(deployer, platformAddress, salt),
                 address(this)
             );
+    }
+
+    function _paymasterSalt(
+        address deployer,
+        address platformAddress,
+        bytes32 salt
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(deployer, platformAddress, salt));
     }
 }

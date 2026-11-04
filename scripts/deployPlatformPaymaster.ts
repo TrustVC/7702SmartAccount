@@ -28,7 +28,7 @@ import { randomBytes } from "crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import hre from "hardhat";
 import * as dotenv from "dotenv";
-import { getNetworkConfig, getEnv } from "./lib/network";
+import { getNetworkConfig, getEnv, getFeeOverrides } from "./lib/network";
 dotenv.config();
 
 const factoryAbi = parseAbi([
@@ -64,6 +64,7 @@ async function main() {
     abi: factoryAbi,
     functionName: "deployPlatformPaymaster",
     args: [platformAddress, dailyLimit, salt],
+    ...getFeeOverrides(hre.network.name),
   });
   console.log("  tx:", txHash);
 

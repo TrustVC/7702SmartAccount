@@ -3,7 +3,22 @@ pragma solidity ^0.8.28;
 
 /// Deployed by MockTdocDeployer and used directly in mintDocument tests.
 /// Implements the IAccessControl + ITradeTrustToken surfaces PlatformPaymaster calls.
-contract MockTitleEscrow {}
+/// Tracks holder/beneficiary like the real TitleEscrow so paymaster validation
+/// can read the live parties. transferHolder mirrors the holder-only guard.
+contract MockTitleEscrow {
+    address public beneficiary;
+    address public holder;
+
+    constructor(address _beneficiary, address _holder) {
+        beneficiary = _beneficiary;
+        holder = _holder;
+    }
+
+    function transferHolder(address newHolder) external {
+        require(msg.sender == holder, "TE: caller not holder");
+        holder = newHolder;
+    }
+}
 
 contract MockRegistry {
     bytes32 public constant DEFAULT_ADMIN_ROLE = bytes32(0);
@@ -46,14 +61,44 @@ contract MockRegistry {
         return _roles[role][account];
     }
 
+    // Test hook: make mint() return a fixed address instead of deploying an escrow,
+    // to simulate a faulty/nonconforming registry.
+    bool public overrideMint;
+    address public overrideEscrow;
+
+    function setMintResult(address escrow) external {
+        overrideMint = true;
+        overrideEscrow = escrow;
+    }
+
+    // Test hook: make mint() call back into msg.sender (the paymaster) with this
+    // calldata, to simulate a registry with a reentrant hook. Reverts bubble up.
+    bytes public reenterData;
+
+    function setReenter(bytes calldata data) external {
+        reenterData = data;
+    }
+
     // ITradeTrustToken — deploys a fresh MockTitleEscrow each call
     function mint(
-        address,
-        address,
+        address beneficiary,
+        address holder,
         uint256,
         bytes calldata
     ) external returns (address titleEscrow) {
-        titleEscrow = address(new MockTitleEscrow());
+        if (!_roles[MINTER_ROLE][msg.sender]) {
+            revert AccessControlUnauthorizedAccount(msg.sender, MINTER_ROLE);
+        }
+        if (reenterData.length > 0) {
+            (bool ok, bytes memory ret) = msg.sender.call(reenterData);
+            if (!ok) {
+                assembly {
+                    revert(add(ret, 32), mload(ret))
+                }
+            }
+        }
+        if (overrideMint) return overrideEscrow;
+        titleEscrow = address(new MockTitleEscrow(beneficiary, holder));
         lastTitleEscrow = titleEscrow;
     }
 }

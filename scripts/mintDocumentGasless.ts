@@ -4,7 +4,7 @@
 //   1. EOA is delegated (type-4 tx) to permissionless impl if not already
 //   2. UserOp calls: execute(PAYMASTER, 0, mintDocument(registry, beneficiary, holder, tokenId, remark))
 //   3. PlatformPaymaster sponsors gas — registry must be in authorizedRegistries
-//   4. Beneficiary + holder are auto-added to authorizedCallers; TitleEscrow to authorizedTitleEscrows
+//   4. TitleEscrow is added to authorizedTitleEscrows; its live holder/beneficiary are then sponsored
 //
 // Run: npx ts-node scripts/mintDocumentGasless.ts
 //
@@ -39,6 +39,7 @@ import { createPimlicoClient } from "permissionless/clients/pimlico";
 import { entryPoint08Address } from "viem/account-abstraction";
 import * as dotenv from "dotenv";
 import { getNetworkConfig, getEnv } from "./lib/network";
+import { PAYMASTER_POST_OP_GAS_LIMIT, sendSponsoredTransaction } from "./lib/userOp";
 dotenv.config();
 
 const PERMISSIONLESS_IMPL = "0xe6Cae83BdE06E4c305530e199D7217f42808555B" as const;
@@ -133,7 +134,7 @@ async function main() {
           paymaster: PAYMASTER_ADDR,
           paymasterData: "0x" as `0x${string}`,
           paymasterVerificationGasLimit: 200_000n,
-          paymasterPostOpGasLimit: 100_000n,
+          paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS_LIMIT,
           isFinal: false,
         };
       },
@@ -142,7 +143,7 @@ async function main() {
           paymaster: PAYMASTER_ADDR,
           paymasterData: "0x" as `0x${string}`,
           paymasterVerificationGasLimit: 200_000n,
-          paymasterPostOpGasLimit: 100_000n,
+          paymasterPostOpGasLimit: PAYMASTER_POST_OP_GAS_LIMIT,
         };
       },
     },
@@ -161,7 +162,7 @@ async function main() {
   });
 
   console.log("Sending UserOp: mintDocument via PlatformPaymaster...");
-  const txHash = await smartAccountClient.sendTransaction({
+  const txHash = await sendSponsoredTransaction(smartAccountClient, {
     to: PAYMASTER_ADDR,
     value: 0n,
     data: mintData,

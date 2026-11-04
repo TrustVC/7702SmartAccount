@@ -11,6 +11,7 @@
 
 import { encodeFunctionData, parseAbi } from "viem";
 import { buildClient, toRemarkBytes, getTRContract } from "./_setup";
+import { sendSponsoredTransaction } from "../lib/userOp";
 import * as dotenv from "dotenv";
 dotenv.config();
 
@@ -27,7 +28,7 @@ async function main() {
   console.log("TR Contract :", contract);
   console.log("\nSending shred() UserOp...");
 
-  const txHash = await smartAccountClient.sendTransaction({
+  const txHash = await sendSponsoredTransaction(smartAccountClient, {
     to: contract,
     value: 0n,
     data: encodeFunctionData({ abi, functionName: "shred", args: [remark] }),
