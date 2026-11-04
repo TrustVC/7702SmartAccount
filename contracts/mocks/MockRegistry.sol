@@ -3,7 +3,22 @@ pragma solidity ^0.8.28;
 
 /// Deployed by MockTdocDeployer and used directly in mintDocument tests.
 /// Implements the IAccessControl + ITradeTrustToken surfaces PlatformPaymaster calls.
-contract MockTitleEscrow {}
+/// Tracks holder/beneficiary like the real TitleEscrow so paymaster validation
+/// can read the live parties. transferHolder mirrors the holder-only guard.
+contract MockTitleEscrow {
+    address public beneficiary;
+    address public holder;
+
+    constructor(address _beneficiary, address _holder) {
+        beneficiary = _beneficiary;
+        holder = _holder;
+    }
+
+    function transferHolder(address newHolder) external {
+        require(msg.sender == holder, "TE: caller not holder");
+        holder = newHolder;
+    }
+}
 
 contract MockRegistry {
     bytes32 public constant DEFAULT_ADMIN_ROLE = bytes32(0);
@@ -46,17 +61,28 @@ contract MockRegistry {
         return _roles[role][account];
     }
 
+    // Test hook: make mint() return a fixed address instead of deploying an escrow,
+    // to simulate a faulty/nonconforming registry.
+    bool public overrideMint;
+    address public overrideEscrow;
+
+    function setMintResult(address escrow) external {
+        overrideMint = true;
+        overrideEscrow = escrow;
+    }
+
     // ITradeTrustToken — deploys a fresh MockTitleEscrow each call
     function mint(
-        address,
-        address,
+        address beneficiary,
+        address holder,
         uint256,
         bytes calldata
     ) external returns (address titleEscrow) {
         if (!_roles[MINTER_ROLE][msg.sender]) {
             revert AccessControlUnauthorizedAccount(msg.sender, MINTER_ROLE);
         }
-        titleEscrow = address(new MockTitleEscrow());
+        if (overrideMint) return overrideEscrow;
+        titleEscrow = address(new MockTitleEscrow(beneficiary, holder));
         lastTitleEscrow = titleEscrow;
     }
 }

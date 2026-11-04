@@ -8,6 +8,7 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 contract PlatformAccountFactory is Ownable {
     address public tdocDeployer;
     address public paymasterImplementation;
+    mapping(address => address) public attachedPaymaster;
 
     event PlatformOnboarded(
         address indexed platformAddress,
@@ -54,7 +55,15 @@ contract PlatformAccountFactory is Ownable {
             dailyLimit,
             tdocDeployer
         );
+        attachedPaymaster[platformAddress] = paymaster;
         emit PlatformOnboarded(platformAddress, paymaster);
+    }
+
+    // Returns the paymaster currently attached to a platform (address(0) if none).
+    function getAttachedPaymaster(
+        address platformAddress
+    ) external view returns (address) {
+        return attachedPaymaster[platformAddress];
     }
 
     // Predict the clone address for a specific deployer and platform.

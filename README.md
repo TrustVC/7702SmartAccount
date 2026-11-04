@@ -41,7 +41,7 @@ Per-platform ERC-4337 paymaster cloned from a shared implementation.
 | `tdocDeployer` | TDocDeployer contract that mints registry clones |
 | `authorizedRegistries` | Registries whose calls this paymaster will sponsor |
 | `authorizedTitleEscrows` | Title escrows whose calls this paymaster will sponsor |
-| `authorizedCallers` | Addresses (beneficiary/holder) allowed on Path A |
+| `authorizedCallers` | Owner-managed addresses allowed to call authorized registries |
 | `userWhitelist` | Deployment credits per user (max 3) |
 | `documentsMinted` | Count of documents minted per caller |
 | `dailyLimit` | Max ETH sponsored per user per day |
@@ -50,11 +50,11 @@ Per-platform ERC-4337 paymaster cloned from a shared implementation.
 
 - `initialize(owner, dailyLimit, tdocDeployer)` — called once by the factory after clone; guarded by `owner() == address(0)`
 - `deployRegistry(impl, name, symbol)` — deploys a TradeTrust registry, consumes one credit, auto-authorizes it
-- `mintDocument(registry, beneficiary, holder, tokenId, remark)` — mints a document, auto-authorizes beneficiary + holder + title escrow
+- `mintDocument(registry, beneficiary, holder, tokenId, remark)` — mints a document, auto-authorizes the title escrow. Escrow calls are sponsored only for the escrow's current holder/beneficiary (read live at validation), so sponsorship follows the document across transfers
 - `setUserWhitelist / removeUserFromWhitelist` — manage deployment credits (`onlyOwner`)
 - `addRegistry / removeRegistry` — manage authorized registries (`onlyOwner`)
 - `addTitleEscrow / removeTitleEscrow` — manage authorized title escrows (`onlyOwner`)
-- `addAuthorizedCaller / removeAuthorizedCaller` — manage Path A callers (`onlyOwner`)
+- `addAuthorizedCaller / removeAuthorizedCaller` — manage extra registry callers; registry role holders (admin/minter/restorer/accepter) are sponsored without this (`onlyOwner`)
 - `setDailyLimit` — update daily spend cap (`onlyOwner`)
 - `getUserDailySpend(user)` — returns `(spent, limit, resetsAt)`
 
