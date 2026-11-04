@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@account-abstraction/contracts/core/BasePaymaster.sol";
 import "@account-abstraction/contracts/core/Helpers.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 interface ITDocDeployer {
     function deploy(
@@ -48,7 +49,7 @@ interface ITitleEscrow {
  * previous party is no longer sponsored and the new one is, with no owner action.
  * Reverted ops are still charged to dailySpend in _postOp (gas was paid).
  */
-contract PlatformPaymaster is BasePaymaster {
+contract PlatformPaymaster is BasePaymaster, ReentrancyGuardTransient {
     bytes4 private constant EXECUTE_SEL =
         bytes4(keccak256("execute(address,uint256,bytes)"));
     bytes4 private constant DEPLOY_REGISTRY_SEL =
@@ -152,7 +153,7 @@ contract PlatformPaymaster is BasePaymaster {
         address implementation,
         string memory name,
         string memory symbol
-    ) external returns (address deployed) {
+    ) external nonReentrant returns (address deployed) {
         require(address(tdocDeployer) != address(0), "TdocDeployer not set");
         uint256 credits = userWhitelist[msg.sender];
         require(credits > 0, "No deployment credits");
@@ -191,7 +192,7 @@ contract PlatformPaymaster is BasePaymaster {
         address holder,
         uint256 tokenId,
         bytes calldata remark
-    ) external returns (address titleEscrow) {
+    ) external nonReentrant returns (address titleEscrow) {
         require(authorizedRegistries[registry], "registry not authorized");
         // The registry only sees the paymaster as minter, so check the real caller here
         require(
@@ -200,6 +201,9 @@ contract PlatformPaymaster is BasePaymaster {
         );
         require(beneficiary != address(0), "invalid beneficiary");
         require(holder != address(0), "invalid holder");
+
+        // Effects before the registry call; reverted together if the mint fails
+        documentsMinted[msg.sender]++;
 
         titleEscrow = ITradeTrustToken(registry).mint(
             beneficiary,
@@ -211,7 +215,6 @@ contract PlatformPaymaster is BasePaymaster {
         require(titleEscrow.code.length > 0, "invalid title escrow");
 
         authorizedTitleEscrows[titleEscrow] = true;
-        documentsMinted[msg.sender]++;
         emit TitleEscrowLinked(titleEscrow, registry);
     }
 
@@ -488,9 +491,6 @@ contract PlatformPaymaster is BasePaymaster {
         }
         abi.decode(args, (address, string, string));
     }
-
-    // v0.8 contracts on Etherspot EntryPoint — skip interface mismatch check
-    function _validateEntryPointInterface(IEntryPoint) internal pure override {}
 
     receive() external payable {
         deposit();

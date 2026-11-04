@@ -71,6 +71,14 @@ contract MockRegistry {
         overrideEscrow = escrow;
     }
 
+    // Test hook: make mint() call back into msg.sender (the paymaster) with this
+    // calldata, to simulate a registry with a reentrant hook. Reverts bubble up.
+    bytes public reenterData;
+
+    function setReenter(bytes calldata data) external {
+        reenterData = data;
+    }
+
     // ITradeTrustToken — deploys a fresh MockTitleEscrow each call
     function mint(
         address beneficiary,
@@ -80,6 +88,14 @@ contract MockRegistry {
     ) external returns (address titleEscrow) {
         if (!_roles[MINTER_ROLE][msg.sender]) {
             revert AccessControlUnauthorizedAccount(msg.sender, MINTER_ROLE);
+        }
+        if (reenterData.length > 0) {
+            (bool ok, bytes memory ret) = msg.sender.call(reenterData);
+            if (!ok) {
+                assembly {
+                    revert(add(ret, 32), mload(ret))
+                }
+            }
         }
         if (overrideMint) return overrideEscrow;
         titleEscrow = address(new MockTitleEscrow(beneficiary, holder));
