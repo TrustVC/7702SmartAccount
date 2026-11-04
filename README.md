@@ -50,7 +50,7 @@ Per-platform ERC-4337 paymaster cloned from a shared implementation.
 
 - `initialize(owner, dailyLimit, tdocDeployer)` — called once by the factory after clone; guarded by `owner() == address(0)`
 - `deployRegistry(impl, name, symbol)` — deploys a TradeTrust registry, consumes one credit, auto-authorizes it
-- `mintDocument(registry, beneficiary, holder, tokenId, remark)` — mints a document, auto-authorizes the title escrow. Escrow calls are sponsored only for the escrow's current holder/beneficiary (read live at validation), so sponsorship follows the document across transfers
+- `mintDocument(registry, beneficiary, holder, tokenId, remark)` — mints a document, auto-authorizes the title escrow. Escrow calls are sponsored only for the escrow's current holder/beneficiary (read live at validation) or the platform owner, so sponsorship follows the document across transfers
 - `setUserWhitelist / removeUserFromWhitelist` — manage deployment credits (`onlyOwner`)
 - `addRegistry / removeRegistry` — manage authorized registries (`onlyOwner`)
 - `addTitleEscrow / removeTitleEscrow` — manage authorized title escrows (`onlyOwner`)
